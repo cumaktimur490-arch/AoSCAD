@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   build-windows-installer:
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 360
     env:
       VCPKG_MAX_CONCURRENCY: 2
@@ -80,7 +80,7 @@ jobs:
         shell: pwsh
         run: |
           $toolchain = Join-Path $env:VCPKG_ROOT 'scripts/buildsystems/vcpkg.cmake'
-          cmake -S . -B build "-DCMAKE_TOOLCHAIN_FILE=$toolchain" -DVCPKG_TARGET_TRIPLET=x64-windows-release "-DVCPKG_OVERLAY_TRIPLETS=$env:GITHUB_WORKSPACE/triplets" -DCMAKE_BUILD_TYPE=Release 2>&1 | Tee-Object -FilePath native-build.log
+          cmake -S . -B build "-DCMAKE_TOOLCHAIN_FILE=$toolchain" -DVCPKG_TARGET_TRIPLET=x64-windows-release -DVCPKG_HOST_TRIPLET=x64-windows-release "-DVCPKG_OVERLAY_TRIPLETS=$env:GITHUB_WORKSPACE/triplets" -DCMAKE_BUILD_TYPE=Release 2>&1 | Tee-Object -FilePath native-build.log
           $buildExitCode = $LASTEXITCODE
           if ($buildExitCode -ne 0) { exit $buildExitCode }
 
