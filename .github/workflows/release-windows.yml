@@ -1,6 +1,8 @@
-name: Windows installer
+name: Windows C++ installer
 
 on:
+  pull_request:
+    branches: [main]
   release:
     types: [published]
   workflow_dispatch:
@@ -16,52 +18,114 @@ permissions:
 jobs:
   build-windows-installer:
     runs-on: windows-latest
+    timeout-minutes: 360
+    env:
+      VCPKG_MAX_CONCURRENCY: 2
     steps:
       - name: Checkout release source
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name || inputs.release_tag || github.ref }}
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build AoSCAD Studio setup
+      - name: Locate vcpkg
         shell: pwsh
         run: |
-          npm run release:win *> installer-build.log
+          $root = $env:VCPKG_INSTALLATION_ROOT
+          if ([string]::IsNullOrWhiteSpace($root)) { $root = 'C:\vcpkg' }
+          $toolchain = Join-Path $root 'scripts/buildsystems/vcpkg.cmake'
+          if (-not (Test-Path $toolchain)) { throw "vcpkg toolchain not found: $toolchain" }
+          "VCPKG_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Using vcpkg at $root"
+
+      - name: Configure native C++ build
+        shell: pwsh
+        run: |
+          $toolchain = Join-Path $env:VCPKG_ROOT 'scripts/buildsystems/vcpkg.cmake'
+          cmake -S . -B build "-DCMAKE_TOOLCHAIN_FILE=$toolchain" -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_BUILD_TYPE=Release 2>&1 | Tee-Object -FilePath native-build.log
           $buildExitCode = $LASTEXITCODE
-          Get-Content installer-build.log
-          if ($buildExitCode -ne 0) {
-            Get-Content installer-build.log -Tail 35 | ForEach-Object {
-              $line = $_.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
-              Write-Output "::error title=Installer build detail::$line"
-            }
-            exit $buildExitCode
+          if ($buildExitCode -ne 0) { exit $buildExitCode }
+
+      - name: Compile AoSCAD Studio
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --parallel 2 2>&1 | Tee-Object -FilePath native-build.log -Append
+          $buildExitCode = $LASTEXITCODE
+          if ($buildExitCode -ne 0) { exit $buildExitCode }
+
+      - name: Package Windows installer
+        shell: pwsh
+        run: |
+          $stage = Join-Path $PWD 'stage'
+          $release = Join-Path $PWD 'release'
+          if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          New-Item -ItemType Directory -Path $release -Force | Out-Null
+
+          cmake --install build --config Release --prefix $stage 2>&1 | Tee-Object -FilePath native-build.log -Append
+          $packageExitCode = $LASTEXITCODE
+          if ($packageExitCode -ne 0) { exit $packageExitCode }
+
+          $vcpkgPrefix = Join-Path $PWD 'build/vcpkg_installed/x64-windows'
+          $runtimeBin = Join-Path $vcpkgPrefix 'bin'
+          if (-not (Test-Path $runtimeBin)) { throw "vcpkg runtime DLL directory not found: $runtimeBin" }
+          Get-ChildItem $runtimeBin -Filter '*.dll' -File | Copy-Item -Destination $stage -Force
+          $env:PATH = "$runtimeBin;$env:PATH"
+
+          $deployTool = Get-ChildItem $vcpkgPrefix -Filter 'windeployqt.exe' -File -Recurse | Select-Object -First 1
+          if (-not $deployTool) { throw 'windeployqt.exe was not installed by the Qt vcpkg feature.' }
+          & $deployTool.FullName --release --compiler-runtime --no-translations (Join-Path $stage 'aoscad-studio.exe') 2>&1 | Tee-Object -FilePath native-build.log -Append
+          $deployExitCode = $LASTEXITCODE
+          if ($deployExitCode -ne 0) { exit $deployExitCode }
+
+          $compilerPath = (Get-Command 'ISCC.exe' -ErrorAction SilentlyContinue).Source
+          if (-not $compilerPath) {
+            choco install innosetup --yes --no-progress 2>&1 | Tee-Object -FilePath native-build.log -Append
+            $installExitCode = $LASTEXITCODE
+            if ($installExitCode -ne 0) { exit $installExitCode }
+            $compilerPath = (Get-Command 'ISCC.exe' -ErrorAction SilentlyContinue).Source
           }
+          if (-not $compilerPath) {
+            $programDirs = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ }
+            $compilerFile = Get-ChildItem -Path $programDirs -Filter 'ISCC.exe' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($compilerFile) { $compilerPath = $compilerFile.FullName }
+          }
+          if (-not $compilerPath) { throw 'Inno Setup compiler ISCC.exe was not found.' }
+
+          & $compilerPath "/O$release" '/FAoSCAD-Studio-Setup-0.2.0-x64' 'installer/aoscad.iss' 2>&1 | Tee-Object -FilePath native-build.log -Append
+          $installerExitCode = $LASTEXITCODE
+          if ($installerExitCode -ne 0) { exit $installerExitCode }
+          $installer = Join-Path $release 'AoSCAD-Studio-Setup-0.2.0-x64.exe'
+          if (-not (Test-Path $installer)) { throw "Installer output missing: $installer" }
+          Write-Host "Created $installer"
+
+      - name: Surface build diagnostics
+        if: failure()
+        shell: pwsh
+        run: |
+          if (Test-Path native-build.log) {
+            Get-Content native-build.log -Tail 45 | ForEach-Object {
+              $line = $_.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+              Write-Output "::error title=Windows installer build detail::$line"
+            }
+          }
+
+      - name: Upload diagnostic build log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: AoSCAD-Studio-native-build-log
+          path: native-build.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload installer artifact
         if: success()
         uses: actions/upload-artifact@v7
         with:
           name: AoSCAD-Studio-Windows-x64
-          path: release/AoSCAD-Studio-Setup-*.exe
+          path: release/AoSCAD-Studio-Setup-0.2.0-x64.exe
           if-no-files-found: error
           retention-days: 30
-
-      - name: Upload diagnostic build log
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: AoSCAD-Studio-installer-build-log
-          path: installer-build.log
-          if-no-files-found: warn
-          retention-days: 7
 
       - name: Attach installer to GitHub Release
         if: github.event_name == 'release' || inputs.release_tag != ''
@@ -70,5 +134,4 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
         shell: pwsh
         run: |
-          $installer = (Get-ChildItem 'release/AoSCAD-Studio-Setup-*.exe' | Select-Object -First 1).FullName
-          gh release upload $env:RELEASE_TAG "$installer" --clobber
+          gh release upload $env:RELEASE_TAG 'release/AoSCAD-Studio-Setup-0.2.0-x64.exe' --clobber

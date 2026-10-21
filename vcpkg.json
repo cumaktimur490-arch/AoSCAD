@@ -1,0 +1,12 @@
+{
+  "name": "aoscad-studio",
+  "version-string": "0.2.0",
+  "dependencies": [
+    {
+      "name": "qtbase",
+      "default-features": false,
+      "features": ["gui", "widgets", "opengl", "windeployqt"]
+    },
+    "opencascade"
+  ]
+}
