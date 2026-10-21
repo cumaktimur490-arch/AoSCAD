@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#11171d"><meta name="description" content="AoSCAD Studio — лёгкая самостоятельная CAD-среда с обменом через STEP, IGES, STL и другие форматы.">
+  <title>AoSCAD Studio</title>
+</head>
+<body>
+<div class="app">
+  <header class="header">
+    <a class="brand" href="#"><span class="brand-logo"><svg viewBox="0 0 32 32"><path d="m16 3 12 7v12l-12 7L4 22V10l12-7Z"/><path d="m4.5 10.5 11.5 7 11.5-7M16 17.5V28M10 7l12 7v6"/></svg></span><span><b>AoS<span>CAD</span></b><small>STUDIO</small></span></a>
+    <span class="vline"></span>
+    <div class="project"><button id="projectName" title="Нажмите, чтобы переименовать">Аэрокорпус <i>⌄</i></button><small><i class="green-dot"></i><span id="saveState">Локальный проект</span><b>·</b><span id="headerUnit">мм</span></small></div>
+    <div class="grow"></div>
+    <button class="icon-btn" id="undo" title="Отменить · Ctrl+Z">↶</button><button class="icon-btn" id="redo" title="Повторить · Ctrl+Shift+Z">↷</button><span class="vline hide-small"></span>
+    <button class="btn outline" id="open"><svg viewBox="0 0 24 24"><path d="M4 7h6l2 2h8v10H4zM4 7V5h6l2 2"/></svg>Импорт</button>
+    <button class="btn outline" id="export"><svg viewBox="0 0 24 24"><path d="M12 15V3m0 0L7 8m5-5 5 5M5 14v6h14v-6"/></svg>Экспорт <i>⌄</i></button>
+    <button class="btn primary" id="save"><svg viewBox="0 0 24 24"><path d="M5 4h12l3 3v13H4V4zM8 4v6h8V4M8 20v-7h8v7"/></svg><span>Сохранить проект</span></button>
+  </header>
+  <div class="workarea">
+    <aside class="sidebar left">
+      <div class="panel-heading"><div><small>ПРОЕКТ</small><h1>Структура</h1></div><button class="icon-btn mini" id="addMenu" title="Добавить объект">＋</button></div>
+      <label class="search"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><input id="searchTree" placeholder="Найти объект"></label>
+      <div class="section-label"><span>КОМПОНЕНТЫ</span><b id="count">0</b></div>
+      <div class="tree" id="tree"></div>
+      <div class="left-bottom"><button class="compat" id="formats"><span class="compat-icon">⬡</span><span><b>Обмен CAD-файлами</b><small>STEP · IGES · STL · OBJ</small></span><i>→</i></button><button class="aeros" id="aeros"><span class="aeros-icon">≋</span><span><b>Для Aeros Engine</b><small>Подготовить STL-модель</small></span><i>↗</i></button></div>
+    </aside>
+    <main class="center">
+      <nav class="toolbar" id="toolbar">
+        <div class="toolgroup"><button class="tool active" data-tool="select" title="Выбор · Q"><svg viewBox="0 0 24 24"><path d="m5 3 14 11-6 1-3 6L5 3Z"/></svg><small>Выбор</small></button><button class="tool" data-tool="move" title="Перемещение · W"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M12 3 9 6m3-3 3 3M12 21l-3-3m3 3 3-3M3 12l3-3m-3 3 3 3m15-3-3-3m3 3-3 3"/></svg><small>Переместить</small></button><button class="tool" data-tool="rotate" title="Вращение · E"><svg viewBox="0 0 24 24"><path d="M20 11A8 8 0 0 0 5 8l-1 2m0-5v5h5M4 13a8 8 0 0 0 15 3l1-2m0 5v-5h-5"/></svg><small>Вращать</small></button><button class="tool" data-tool="scale" title="Масштаб · R"><svg viewBox="0 0 24 24"><path d="M4 20 20 4M7 4h13v13M4 7v13h13"/></svg><small>Масштаб</small></button></div>
+        <span class="tool-divider"></span>
+        <div class="toolgroup"><button class="tool" data-tool="sketch" title="Рисовать эскиз на XY"><svg viewBox="0 0 24 24"><path d="m4 20 4-1 11-11a2 2 0 0 0-3-3L5 16l-1 4ZM14 6l4 4"/></svg><small>Эскиз</small></button><button class="tool" data-tool="measure" title="Измерить расстояние"><svg viewBox="0 0 24 24"><path d="M4 7h16v10H4zM8 7v4m4-4v2m4-2v4m-8 2v2m4-2v2m4-2v2"/></svg><small>Измерить</small></button></div>
+        <span class="tool-divider"></span>
+        <div class="toolgroup"><button class="tool add-primary" id="addBox"><svg viewBox="0 0 24 24"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4.5 7.8 7.5 4.3 7.5-4.3M12 12v9"/></svg><small>Бокс</small></button><button class="tool" id="primitives"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.1 2.2 3.2 5 3.2 8.5s-1.1 6.3-3.2 8.5C9.9 18.3 8.8 15.5 8.8 12s1.1-6.3 3.2-8.5Z"/></svg><small>Примитивы</small></button><button class="tool" id="fit"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3"/></svg><small>Вписать</small></button></div>
+      </nav>
+      <div class="viewport" id="viewport">
+        <div class="view-head"><span><i class="cube-mark">◇</i><b id="viewLabel">Изометрия</b><em>/</em><span id="selectionLabel">Ничего не выбрано</span></span><div><button class="chip" id="gridToggle">▦ Сетка <i class="on" id="gridState"></i></button><button class="chip" id="views">Вид ⌄</button></div></div>
+        <div class="view-cube"><button data-view="top">ВЕРХ</button><button data-view="front">ПЕРЕД</button><button data-view="right">ПРАВО</button><small>X <i>Y</i> <b>Z</b></small></div>
+        <div class="view-help"><kbd>MMB</kbd> Орбита <span>·</span> <kbd>Колесо</kbd> Масштаб <span>·</span> <kbd>F</kbd> Вписать</div>
+        <div class="drop" id="drop"><b>Отпустите файл для импорта</b><small>STEP · IGES · STL · OBJ · PLY · 3MF · GLB · DXF</small></div>
+      </div>
+      <footer class="status"><span><i class="green-dot"></i>Готово</span><span class="coords" id="coords">X 0.00　Y 0.00　Z 0.00</span><span class="status-spacer"></span><button id="units">мм ⌄</button><span>Сетка 10 мм</span><span id="statusCount">0 объектов</span></footer>
+    </main>
+    <aside class="sidebar right">
+      <div class="tabs"><button class="tab active" data-tab="props">Свойства</button><button class="tab" data-tab="material">Материал</button><button class="dots" id="more">•••</button></div>
+      <div class="inspector" id="inspector"></div>
+      <div class="inspector-foot"><i>✦</i> AoSCAD Studio <small>0.1</small><button id="help">Клавиши <kbd>?</kbd></button></div>
+    </aside>
+  </div>
+</div>
+<div class="toast" id="toast"></div><div class="menu hidden" id="menu"></div>
+<input id="file" type="file" hidden multiple accept=".aoscad,.step,.stp,.iges,.igs,.brep,.brp,.stl,.obj,.ply,.3mf,.gltf,.glb,.dxf,.sldprt,.sldasm,.slddrw,.grb,.tfc,.f3d,.f3z,.x_t,.x_b,.ipt,.iam,.fcstd">
+<input id="color" type="color" hidden>
+<script type="module" src="/src/main.js"></script>
+</body></html>

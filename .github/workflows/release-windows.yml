@@ -1,0 +1,47 @@
+name: Windows installer
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-installer:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build AoSCAD Studio setup
+        run: npm run release:win
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AoSCAD-Studio-Windows-x64
+          path: release/AoSCAD-Studio-Setup-*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach installer to GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $installer = (Get-ChildItem 'release/AoSCAD-Studio-Setup-*.exe' | Select-Object -First 1).FullName
+          gh release upload $env:GITHUB_REF_NAME "$installer" --clobber

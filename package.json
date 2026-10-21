@@ -1,0 +1,65 @@
+{
+  "name": "aoscad-studio",
+  "productName": "AoSCAD Studio",
+  "version": "0.1.0",
+  "description": "Standalone CAD workspace for preparing and exchanging 3D models.",
+  "author": "AoSCAD Contributors",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "copy:occt": "node scripts/copy-occt.mjs",
+    "dev": "npm run copy:occt && vite --host 0.0.0.0",
+    "build": "npm run copy:occt && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "app:dev": "npm run build && electron .",
+    "release:win": "npm run build && electron-builder --win nsis --x64"
+  },
+  "devDependencies": {
+    "electron": "^45.0.0",
+    "electron-builder": "^26.15.3",
+    "occt-import-js": "^0.0.23",
+    "three": "^0.186.1",
+    "vite": "^7.1.9"
+  },
+  "build": {
+    "appId": "com.aoscad.studio",
+    "productName": "AoSCAD Studio",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "assets/icon.ico",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "AoSCAD-Studio-Setup-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AoSCAD Studio",
+      "runAfterFinish": true,
+      "installerLanguages": [
+        "en_US",
+        "ru_RU"
+      ],
+      "language": "1049"
+    }
+  }
+}
