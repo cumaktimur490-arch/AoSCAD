@@ -20,7 +20,7 @@ npm run release:win
 ```
 Файл появится в `release/AoSCAD-Studio-Setup-0.1.0-x64.exe`.
 
-**GitHub Actions:** workflow `Windows installer` можно запустить вручную из Actions — установщик появится в артефактах сборки. После публикации GitHub Release workflow соберёт `.exe` на Windows runner и приложит его к релизу. Для первой версии создайте релиз `v0.1.0` (версия из `package.json`).
+**GitHub Actions:** после публикации GitHub Release workflow соберёт `.exe` на Windows runner и приложит его к релизу. Workflow можно запустить и вручную: установщик появится в артефактах; для загрузки в уже созданный релиз укажите его тег, например `v0.1.0`. Для первой версии используйте тег `v0.1.0` (версия из `package.json`).
 
 Для локальной отладки настольной оболочки: `npm run app:dev`. Браузерная разработка: `npm ci` и `npm run dev`.
 
