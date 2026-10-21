@@ -10,6 +10,7 @@ public/occt/
 /cmake-build-*/
 /stage/
 /vcpkg_installed/
+/vcpkg-build-data/
 CMakeFiles/
 CMakeCache.txt
 compile_commands.json

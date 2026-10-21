@@ -40,7 +40,7 @@ jobs:
       - name: Relocate vcpkg build data to the workspace drive
         shell: pwsh
         run: |
-          $storageRoot = Join-Path ([System.IO.Path]::GetPathRoot($env:GITHUB_WORKSPACE)) 'vcpkg-build-data'
+          $storageRoot = Join-Path $env:GITHUB_WORKSPACE 'vcpkg-build-data'
           New-Item -ItemType Directory -Path $storageRoot -Force | Out-Null
           foreach ($directory in @('buildtrees', 'downloads', 'packages', 'installed')) {
             $source = Join-Path $env:VCPKG_ROOT $directory
@@ -59,12 +59,22 @@ jobs:
           }
           $tempDirectory = Join-Path $storageRoot 'temp'
           New-Item -ItemType Directory -Path $tempDirectory -Force | Out-Null
+          $binaryCache = Join-Path $storageRoot 'binary-cache'
+          New-Item -ItemType Directory -Path $binaryCache -Force | Out-Null
           "VCPKG_DOWNLOADS=$(Join-Path $storageRoot 'downloads')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VCPKG_DEFAULT_BINARY_CACHE=$binaryCache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "TEMP=$tempDirectory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "TMP=$tempDirectory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object {
             Write-Host ("Drive {0}: {1:N1} GB free" -f $_.DeviceID, ($_.FreeSpace / 1GB))
           }
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-build-data/binary-cache
+          key: windows-vcpkg-${{ hashFiles('vcpkg.json', 'triplets/**') }}
+          restore-keys: windows-vcpkg-
 
       - name: Configure native C++ build
         shell: pwsh
@@ -132,7 +142,12 @@ jobs:
         shell: pwsh
         run: |
           if (Test-Path native-build.log) {
-            Get-Content native-build.log -Tail 45 | ForEach-Object {
+            $logLines = @(Get-Content native-build.log)
+            $diagnostics = @($logLines | Where-Object {
+              $_ -match '(?i)(error\b|fatal\b|failed\b|failure\b|exception|not enough space|could not|unable to)'
+            } | Select-Object -Last 25)
+            if ($diagnostics.Count -eq 0) { $diagnostics = @($logLines | Select-Object -Last 45) }
+            $diagnostics | ForEach-Object {
               $line = $_.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
               Write-Output "::error title=Windows installer build detail::$line"
             }
