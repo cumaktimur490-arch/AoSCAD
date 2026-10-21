@@ -4,6 +4,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing GitHub Release tag to attach the installer to
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -13,12 +18,12 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout release source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.release.tag_name || github.ref }}
+          ref: ${{ github.event.release.tag_name || inputs.release_tag || github.ref }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -27,21 +32,43 @@ jobs:
         run: npm ci
 
       - name: Build AoSCAD Studio setup
-        run: npm run release:win
+        shell: pwsh
+        run: |
+          npm run release:win *> installer-build.log
+          $buildExitCode = $LASTEXITCODE
+          Get-Content installer-build.log
+          if ($buildExitCode -ne 0) {
+            Get-Content installer-build.log -Tail 35 | ForEach-Object {
+              $line = $_.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+              Write-Output "::error title=Installer build detail::$line"
+            }
+            exit $buildExitCode
+          }
 
       - name: Upload installer artifact
-        uses: actions/upload-artifact@v4
+        if: success()
+        uses: actions/upload-artifact@v7
         with:
           name: AoSCAD-Studio-Windows-x64
           path: release/AoSCAD-Studio-Setup-*.exe
           if-no-files-found: error
           retention-days: 30
 
+      - name: Upload diagnostic build log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: AoSCAD-Studio-installer-build-log
+          path: installer-build.log
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Attach installer to GitHub Release
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
         shell: pwsh
         run: |
           $installer = (Get-ChildItem 'release/AoSCAD-Studio-Setup-*.exe' | Select-Object -First 1).FullName
-          gh release upload $env:GITHUB_REF_NAME "$installer" --clobber
+          gh release upload $env:RELEASE_TAG "$installer" --clobber
