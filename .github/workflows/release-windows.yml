@@ -70,17 +70,18 @@ jobs:
           }
 
       - name: Cache vcpkg binary packages
+        id: vcpkg-cache
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/vcpkg-build-data/binary-cache
-          key: windows-vcpkg-${{ hashFiles('vcpkg.json', 'triplets/**') }}
+          key: windows-vcpkg-${{ hashFiles('vcpkg.json') }}
           restore-keys: windows-vcpkg-
 
       - name: Configure native C++ build
         shell: pwsh
         run: |
           $toolchain = Join-Path $env:VCPKG_ROOT 'scripts/buildsystems/vcpkg.cmake'
-          cmake -S . -B build "-DCMAKE_TOOLCHAIN_FILE=$toolchain" -DVCPKG_TARGET_TRIPLET=x64-windows-release -DVCPKG_HOST_TRIPLET=x64-windows-release "-DVCPKG_OVERLAY_TRIPLETS=$env:GITHUB_WORKSPACE/triplets" -DCMAKE_BUILD_TYPE=Release 2>&1 | Tee-Object -FilePath native-build.log
+          cmake -S . -B build "-DCMAKE_TOOLCHAIN_FILE=$toolchain" -DVCPKG_TARGET_TRIPLET=x64-windows -DVCPKG_HOST_TRIPLET=x64-windows -DCMAKE_BUILD_TYPE=Release 2>&1 | Tee-Object -FilePath native-build.log
           $buildExitCode = $LASTEXITCODE
           if ($buildExitCode -ne 0) { exit $buildExitCode }
 
@@ -104,7 +105,7 @@ jobs:
           $packageExitCode = $LASTEXITCODE
           if ($packageExitCode -ne 0) { exit $packageExitCode }
 
-          $vcpkgPrefix = Join-Path $PWD 'build/vcpkg_installed/x64-windows-release'
+          $vcpkgPrefix = Join-Path $PWD 'build/vcpkg_installed/x64-windows'
           $runtimeBin = Join-Path $vcpkgPrefix 'bin'
           if (-not (Test-Path $runtimeBin)) { throw "vcpkg runtime DLL directory not found: $runtimeBin" }
           Get-ChildItem $runtimeBin -Filter '*.dll' -File | Copy-Item -Destination $stage -Force
@@ -147,11 +148,34 @@ jobs:
               $_ -match '(?i)(error\b|fatal\b|failed\b|failure\b|exception|not enough space|could not|unable to)'
             } | Select-Object -Last 25)
             if ($diagnostics.Count -eq 0) { $diagnostics = @($logLines | Select-Object -Last 45) }
-            $diagnostics | ForEach-Object {
-              $line = $_.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
-              Write-Output "::error title=Windows installer build detail::$line"
+            $detail = ($diagnostics -join "`n").Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=Windows installer build detail::$detail"
+
+            $failedPorts = @()
+            foreach ($line in $logLines) {
+              if ($line -match '(?i)error:\s+building\s+([A-Za-z0-9_.-]+):') { $failedPorts += $Matches[1] }
+            }
+            foreach ($failedPort in ($failedPorts | Select-Object -Unique)) {
+              $portLogRoot = Join-Path $env:VCPKG_ROOT "buildtrees/$failedPort"
+              if (Test-Path $portLogRoot) {
+                $portLogs = @(Get-ChildItem -Path $portLogRoot -Filter '*.log' -File -Recurse -ErrorAction SilentlyContinue |
+                  Sort-Object LastWriteTime -Descending | Select-Object -First 4)
+                foreach ($portLog in $portLogs) {
+                  $portLines = @(Get-Content $portLog.FullName -Tail 35 -ErrorAction SilentlyContinue)
+                  $portDetail = "$($portLog.Name):`n" + ($portLines -join "`n")
+                  $portDetail = $portDetail.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+                  Write-Output "::error title=vcpkg-$failedPort failure log::$portDetail"
+                }
+              }
             }
           }
+
+      - name: Save vcpkg binary packages after failure
+        if: failure() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-build-data/binary-cache
+          key: windows-vcpkg-${{ hashFiles('vcpkg.json') }}
 
       - name: Upload diagnostic build log
         if: failure()
