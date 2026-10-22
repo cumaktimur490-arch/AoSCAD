@@ -27,44 +27,38 @@ jobs:
         with:
           ref: ${{ github.event.release.tag_name || inputs.release_tag || github.ref }}
 
-      - name: Locate vcpkg
+      - name: Prepare vcpkg on the workspace drive
         shell: pwsh
         run: |
-          $root = $env:VCPKG_INSTALLATION_ROOT
-          if ([string]::IsNullOrWhiteSpace($root)) { $root = 'C:\vcpkg' }
-          $toolchain = Join-Path $root 'scripts/buildsystems/vcpkg.cmake'
-          if (-not (Test-Path $toolchain)) { throw "vcpkg toolchain not found: $toolchain" }
-          "VCPKG_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Using vcpkg at $root"
+          $sourceRoot = $env:VCPKG_INSTALLATION_ROOT
+          if ([string]::IsNullOrWhiteSpace($sourceRoot)) { $sourceRoot = 'C:\vcpkg' }
+          $sourceToolchain = Join-Path $sourceRoot 'scripts/buildsystems/vcpkg.cmake'
+          if (-not (Test-Path $sourceToolchain)) { throw "vcpkg toolchain not found: $sourceToolchain" }
 
-      - name: Relocate vcpkg build data to the workspace drive
-        shell: pwsh
-        run: |
-          $storageRoot = Join-Path $env:GITHUB_WORKSPACE 'vcpkg-build-data'
-          New-Item -ItemType Directory -Path $storageRoot -Force | Out-Null
-          foreach ($directory in @('buildtrees', 'downloads', 'packages', 'installed')) {
-            $source = Join-Path $env:VCPKG_ROOT $directory
-            $target = Join-Path $storageRoot $directory
-            if (Test-Path -LiteralPath $source) {
-              $sourceItem = Get-Item -LiteralPath $source -Force
-              if (($sourceItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) {
-                Move-Item -LiteralPath $source -Destination $target
-              }
-            } else {
-              New-Item -ItemType Directory -Path $target -Force | Out-Null
-            }
-            if (-not (Test-Path -LiteralPath $source)) {
-              New-Item -ItemType Junction -Path $source -Target $target | Out-Null
-            }
+          $root = Join-Path $env:GITHUB_WORKSPACE 'vcpkg-root'
+          if (Test-Path $root) { Remove-Item $root -Recurse -Force }
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          $excluded = @('buildtrees', 'downloads', 'packages', 'installed', '.git') | ForEach-Object {
+            Join-Path $sourceRoot $_
           }
+          $copyArgs = @($sourceRoot, $root, '/E', '/COPY:DAT', '/R:1', '/W:1', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/XD') + $excluded
+          & robocopy @copyArgs | Out-Null
+          $copyExitCode = $LASTEXITCODE
+          if ($copyExitCode -ge 8) { throw "Copying vcpkg to the workspace drive failed with exit code $copyExitCode." }
+
+          $toolchain = Join-Path $root 'scripts/buildsystems/vcpkg.cmake'
+          if (-not (Test-Path $toolchain)) { throw "Copied vcpkg toolchain not found: $toolchain" }
+          $storageRoot = Join-Path $env:GITHUB_WORKSPACE 'vcpkg-build-data'
+          $downloads = Join-Path $storageRoot 'downloads'
           $tempDirectory = Join-Path $storageRoot 'temp'
-          New-Item -ItemType Directory -Path $tempDirectory -Force | Out-Null
           $binaryCache = Join-Path $storageRoot 'binary-cache'
-          New-Item -ItemType Directory -Path $binaryCache -Force | Out-Null
-          "VCPKG_DOWNLOADS=$(Join-Path $storageRoot 'downloads')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          New-Item -ItemType Directory -Path @($downloads, $tempDirectory, $binaryCache) -Force | Out-Null
+          "VCPKG_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VCPKG_DOWNLOADS=$downloads" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "VCPKG_DEFAULT_BINARY_CACHE=$binaryCache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "TEMP=$tempDirectory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "TMP=$tempDirectory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Using copied vcpkg at $root"
           Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object {
             Write-Host ("Drive {0}: {1:N1} GB free" -f $_.DeviceID, ($_.FreeSpace / 1GB))
           }
@@ -159,9 +153,10 @@ jobs:
               $portLogRoot = Join-Path $env:VCPKG_ROOT "buildtrees/$failedPort"
               if (Test-Path $portLogRoot) {
                 $portLogs = @(Get-ChildItem -Path $portLogRoot -Filter '*.log' -File -Recurse -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Name -match '(?:-out|-err)\.log$' } |
                   Sort-Object LastWriteTime -Descending | Select-Object -First 4)
                 foreach ($portLog in $portLogs) {
-                  $portLines = @(Get-Content $portLog.FullName -Tail 35 -ErrorAction SilentlyContinue)
+                  $portLines = @(Get-Content $portLog.FullName -Tail 100 -ErrorAction SilentlyContinue)
                   $portDetail = "$($portLog.Name):`n" + ($portLines -join "`n")
                   $portDetail = $portDetail.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
                   Write-Output "::error title=vcpkg-$failedPort failure log::$portDetail"
