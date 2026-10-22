@@ -30,6 +30,8 @@ jobs:
       - name: Prepare vcpkg on the workspace drive
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          try {
           $sourceRoot = $env:VCPKG_INSTALLATION_ROOT
           if ([string]::IsNullOrWhiteSpace($sourceRoot)) { $sourceRoot = 'C:\vcpkg' }
           $sourceToolchain = Join-Path $sourceRoot 'scripts/buildsystems/vcpkg.cmake'
@@ -45,10 +47,12 @@ jobs:
           & robocopy @copyArgs | Out-Null
           $copyExitCode = $LASTEXITCODE
           if ($copyExitCode -ge 8) { throw "Copying vcpkg to the workspace drive failed with exit code $copyExitCode." }
+          $LASTEXITCODE = 0
 
           $toolchain = Join-Path $root 'scripts/buildsystems/vcpkg.cmake'
           if (-not (Test-Path $toolchain)) { throw "Copied vcpkg toolchain not found: $toolchain" }
           $storageRoot = Join-Path $env:GITHUB_WORKSPACE 'vcpkg-build-data'
+          New-Item -ItemType Directory -Path $storageRoot -Force | Out-Null
           $downloads = Join-Path $storageRoot 'downloads'
           $tempDirectory = Join-Path $storageRoot 'temp'
           $binaryCache = Join-Path $storageRoot 'binary-cache'
@@ -61,6 +65,11 @@ jobs:
           Write-Host "Using copied vcpkg at $root"
           Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object {
             Write-Host ("Drive {0}: {1:N1} GB free" -f $_.DeviceID, ($_.FreeSpace / 1GB))
+          }
+          } catch {
+            $message = $_.Exception.Message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=Prepare vcpkg failed::$message"
+            throw
           }
 
       - name: Cache vcpkg binary packages
