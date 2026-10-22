@@ -4,3 +4,14 @@ release/
 public/occt/
 .vite/
 .DS_Store
+
+# Native C++ build output
+/build/
+/cmake-build-*/
+/stage/
+/vcpkg_installed/
+/vcpkg-build-data/
+/vcpkg-root/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
