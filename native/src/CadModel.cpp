@@ -1,7 +1,16 @@
 #include "CadModel.hpp"
 
 #include <BRep_Builder.hxx>
+#include <BRepBndLib.hxx>
+#include <BRepGProp.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
+#include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepPrimAPI_MakeCone.hxx>
+#include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakeSphere.hxx>
+#include <BRepPrimAPI_MakeTorus.hxx>
+#include <Bnd_Box.hxx>
+#include <GProp_GProps.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
@@ -172,6 +181,35 @@ QVector3D vectorFromJson(const QJsonValue& value, const QVector3D& fallback)
                      static_cast<float>(array[2].toDouble(fallback.z())));
 }
 
+TopoDS_Shape makePrimitiveShape(const QString& primitiveType, const std::vector<double>& parameters)
+{
+    const int expectedCount = primitiveParameterCount(primitiveType);
+    if (expectedCount == 0 || static_cast<int>(parameters.size()) != expectedCount)
+        throw CadError(QStringLiteral("Набор параметров примитива некорректен."));
+
+    for (std::size_t i = 0; i < parameters.size(); ++i) {
+        const double value = parameters[i];
+        const bool zeroAllowed = primitiveType == QStringLiteral("cone") && i == 1;
+        if (!std::isfinite(value) || value < 0.0 || (!zeroAllowed && value <= 0.0))
+            throw CadError(QStringLiteral("Размеры примитива должны быть положительными числами."));
+    }
+
+    if (primitiveType == QStringLiteral("box"))
+        return BRepPrimAPI_MakeBox(parameters[0], parameters[1], parameters[2]).Shape();
+    if (primitiveType == QStringLiteral("cylinder"))
+        return BRepPrimAPI_MakeCylinder(parameters[0], parameters[1]).Shape();
+    if (primitiveType == QStringLiteral("sphere"))
+        return BRepPrimAPI_MakeSphere(parameters[0]).Shape();
+    if (primitiveType == QStringLiteral("cone"))
+        return BRepPrimAPI_MakeCone(parameters[0], parameters[1], parameters[2]).Shape();
+    if (primitiveType == QStringLiteral("torus")) {
+        if (parameters[1] >= parameters[0])
+            throw CadError(QStringLiteral("Малый радиус тора должен быть меньше большого радиуса."));
+        return BRepPrimAPI_MakeTorus(parameters[0], parameters[1]).Shape();
+    }
+    throw CadError(QStringLiteral("Этот тип примитива не поддерживается."));
+}
+
 QByteArray shapeToBase64(const TopoDS_Shape& shape, QTemporaryDir& directory, std::size_t index)
 {
     const QString path = directory.filePath(QStringLiteral("shape-%1.brep").arg(index));
@@ -263,6 +301,62 @@ CadError::CadError(const QString& message)
 {
 }
 
+const std::vector<CadMaterial>& cadMaterials()
+{
+    static const std::vector<CadMaterial> materials{
+        {QStringLiteral("unassigned"), QStringLiteral("Не задан"), 0.0},
+        {QStringLiteral("steel"), QStringLiteral("Сталь"), 7850.0},
+        {QStringLiteral("stainless-steel"), QStringLiteral("Нержавеющая сталь"), 8000.0},
+        {QStringLiteral("aluminum"), QStringLiteral("Алюминий"), 2700.0},
+        {QStringLiteral("copper"), QStringLiteral("Медь"), 8960.0},
+        {QStringLiteral("abs"), QStringLiteral("ABS-пластик"), 1040.0},
+        {QStringLiteral("pla"), QStringLiteral("PLA-пластик"), 1240.0}
+    };
+    return materials;
+}
+
+double materialDensityKgPerM3(const QString& materialId)
+{
+    for (const CadMaterial& material : cadMaterials()) {
+        if (material.id == materialId)
+            return material.densityKgPerM3;
+    }
+    return 0.0;
+}
+
+int primitiveParameterCount(const QString& primitiveType)
+{
+    if (primitiveType == QStringLiteral("box") || primitiveType == QStringLiteral("cone"))
+        return 3;
+    if (primitiveType == QStringLiteral("cylinder") || primitiveType == QStringLiteral("torus"))
+        return 2;
+    if (primitiveType == QStringLiteral("sphere"))
+        return 1;
+    return 0;
+}
+
+QStringList primitiveParameterNames(const QString& primitiveType)
+{
+    if (primitiveType == QStringLiteral("box"))
+        return {QStringLiteral("Длина X"), QStringLiteral("Ширина Y"), QStringLiteral("Высота Z")};
+    if (primitiveType == QStringLiteral("cylinder"))
+        return {QStringLiteral("Радиус"), QStringLiteral("Высота")};
+    if (primitiveType == QStringLiteral("sphere"))
+        return {QStringLiteral("Радиус")};
+    if (primitiveType == QStringLiteral("cone"))
+        return {QStringLiteral("Радиус основания"), QStringLiteral("Радиус вершины"), QStringLiteral("Высота")};
+    if (primitiveType == QStringLiteral("torus"))
+        return {QStringLiteral("Большой радиус"), QStringLiteral("Малый радиус")};
+    return {};
+}
+
+void CadObject::setPrimitiveParameters(const std::vector<double>& parameters)
+{
+    const TopoDS_Shape updatedShape = makePrimitiveShape(primitiveType, parameters);
+    shape = updatedShape;
+    primitiveParameters = parameters;
+}
+
 QMatrix4x4 CadObject::transformMatrix() const
 {
     QMatrix4x4 matrix;
@@ -320,6 +414,35 @@ CadObject CadIO::importFile(const QString& filePath)
     return object;
 }
 
+CadGeometryProperties CadIO::analyzeShape(const TopoDS_Shape& shape)
+{
+    CadGeometryProperties result;
+    if (shape.IsNull())
+        return result;
+
+    GProp_GProps surfaceProperties;
+    BRepGProp::SurfaceProperties(shape, surfaceProperties);
+    result.surfaceAreaMm2 = std::abs(surfaceProperties.Mass());
+
+    GProp_GProps volumeProperties;
+    BRepGProp::VolumeProperties(shape, volumeProperties, true);
+    result.volumeMm3 = std::abs(volumeProperties.Mass());
+    result.hasVolume = std::isfinite(result.volumeMm3) && result.volumeMm3 > 1.0e-9;
+
+    Bnd_Box bounds;
+    BRepBndLib::Add(shape, bounds);
+    if (!bounds.IsVoid()) {
+        Standard_Real xmin = 0.0, ymin = 0.0, zmin = 0.0;
+        Standard_Real xmax = 0.0, ymax = 0.0, zmax = 0.0;
+        bounds.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+        result.boundsMm = QVector3D(static_cast<float>(xmax - xmin),
+                                    static_cast<float>(ymax - ymin),
+                                    static_cast<float>(zmax - zmin));
+        result.hasBounds = true;
+    }
+    return result;
+}
+
 std::vector<CadTriangle> CadIO::triangulate(const TopoDS_Shape& shape,
                                              std::size_t objectIndex,
                                              double linearDeflection)
@@ -375,8 +498,9 @@ CadDocument CadIO::loadProject(const QString& filePath)
         throw CadError(QStringLiteral("Файл проекта не является корректным JSON."));
 
     const QJsonObject root = json.object();
+    const int projectVersion = root.value(QStringLiteral("version")).toInt();
     if (root.value(QStringLiteral("format")).toString() != QStringLiteral("aoscad-studio-project") ||
-        root.value(QStringLiteral("version")).toInt() != 2) {
+        (projectVersion != 2 && projectVersion != 3)) {
         if (root.contains(QStringLiteral("scene")))
             throw CadError(QStringLiteral("Это проект старой Web/Electron-версии AoSCAD. Экспортируйте в ней геометрию в STL или OBJ и импортируйте сетку в C++-версию."));
         throw CadError(QStringLiteral("Формат проекта AoSCAD не поддерживается."));
@@ -403,6 +527,29 @@ CadDocument CadIO::loadProject(const QString& filePath)
         object.position = vectorFromJson(item.value(QStringLiteral("position")), {});
         object.rotation = vectorFromJson(item.value(QStringLiteral("rotation")), {});
         object.scale = vectorFromJson(item.value(QStringLiteral("scale")), QVector3D(1, 1, 1));
+        if (projectVersion >= 3) {
+            const QString primitiveType = item.value(QStringLiteral("primitiveType")).toString();
+            const QJsonArray parameterValues = item.value(QStringLiteral("primitiveParameters")).toArray();
+            if (primitiveParameterCount(primitiveType) > 0 && primitiveParameterCount(primitiveType) == parameterValues.size()) {
+                object.primitiveType = primitiveType;
+                object.primitiveParameters.reserve(static_cast<std::size_t>(parameterValues.size()));
+                for (const QJsonValue& parameter : parameterValues) {
+                    if (!parameter.isDouble()) {
+                        object.primitiveType.clear();
+                        object.primitiveParameters.clear();
+                        break;
+                    }
+                    object.primitiveParameters.push_back(parameter.toDouble());
+                }
+            }
+            const QString materialId = item.value(QStringLiteral("materialId")).toString(QStringLiteral("unassigned"));
+            object.materialId = materialId;
+            const bool knownMaterial = std::any_of(cadMaterials().begin(), cadMaterials().end(), [&object](const CadMaterial& material) {
+                return material.id == object.materialId;
+            });
+            if (!knownMaterial)
+                object.materialId = QStringLiteral("unassigned");
+        }
         const QByteArray shapeData = item.value(QStringLiteral("brep")).toString().toLatin1();
         object.shape = shapeFromBase64(shapeData, temporaryDirectory, static_cast<std::size_t>(i));
         document.objects.push_back(std::move(object));
@@ -426,13 +573,19 @@ void CadIO::saveProject(const CadDocument& document, const QString& filePath)
         item.insert(QStringLiteral("position"), vectorToJson(object.position));
         item.insert(QStringLiteral("rotation"), vectorToJson(object.rotation));
         item.insert(QStringLiteral("scale"), vectorToJson(object.scale));
+        item.insert(QStringLiteral("primitiveType"), object.primitiveType);
+        QJsonArray primitiveParameters;
+        for (double parameter : object.primitiveParameters)
+            primitiveParameters.push_back(parameter);
+        item.insert(QStringLiteral("primitiveParameters"), primitiveParameters);
+        item.insert(QStringLiteral("materialId"), object.materialId);
         item.insert(QStringLiteral("brep"), QString::fromLatin1(shapeToBase64(object.shape, temporaryDirectory, i)));
         objects.push_back(item);
     }
 
     QJsonObject root;
     root.insert(QStringLiteral("format"), QStringLiteral("aoscad-studio-project"));
-    root.insert(QStringLiteral("version"), 2);
+    root.insert(QStringLiteral("version"), 3);
     root.insert(QStringLiteral("name"), document.name);
     root.insert(QStringLiteral("units"), document.units);
     root.insert(QStringLiteral("objects"), objects);
