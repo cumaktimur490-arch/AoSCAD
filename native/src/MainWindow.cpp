@@ -1,18 +1,16 @@
 #include "MainWindow.hpp"
 
-#include <BRepPrimAPI_MakeBox.hxx>
-#include <BRepPrimAPI_MakeCone.hxx>
-#include <BRepPrimAPI_MakeCylinder.hxx>
-#include <BRepPrimAPI_MakeSphere.hxx>
-#include <BRepPrimAPI_MakeTorus.hxx>
 #include <Standard_Failure.hxx>
 
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
+#include <QCoreApplication>
 #include <QColorDialog>
 #include <QComboBox>
+#include <QCloseEvent>
 #include <QDoubleSpinBox>
+#include <QDir>
 #include <QFileInfo>
 #include <QGroupBox>
 #include <QAbstractSpinBox>
@@ -30,6 +28,9 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QProcess>
+#include <QScrollArea>
+#include <QFrame>
 #include <QSignalBlocker>
 #include <QStatusBar>
 #include <QStringList>
@@ -45,6 +46,24 @@
 #include <utility>
 
 namespace {
+bool sameDocumentState(const CadDocument& left, const CadDocument& right)
+{
+    if (left.name != right.name || left.units != right.units || left.objects.size() != right.objects.size())
+        return false;
+    for (std::size_t i = 0; i < left.objects.size(); ++i) {
+        const CadObject& a = left.objects[i];
+        const CadObject& b = right.objects[i];
+        if (a.name != b.name || a.color != b.color || a.position != b.position ||
+            a.rotation != b.rotation || a.scale != b.scale || a.visible != b.visible ||
+            a.primitiveType != b.primitiveType || a.primitiveParameters != b.primitiveParameters ||
+            a.materialId != b.materialId || a.shape.IsNull() != b.shape.IsNull())
+            return false;
+        if (!a.shape.IsNull() && !a.shape.IsSame(b.shape))
+            return false;
+    }
+    return true;
+}
+
 QString openFilter()
 {
     return QStringLiteral("CAD-файлы (*.step *.stp *.iges *.igs *.brep *.brp *.stl *.obj *.sldprt *.sldasm *.slddrw *.tfc *.grb);;Все файлы (*.*)");
@@ -104,7 +123,6 @@ QWidget* xyzRow(const QStringList& labels,
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
-    setWindowTitle(QStringLiteral("AoSCAD Studio · C++"));
     resize(1440, 900);
     setMinimumSize(960, 640);
     setDockOptions(QMainWindow::AnimatedDocks | QMainWindow::AllowTabbedDocks | QMainWindow::AllowNestedDocks);
@@ -114,7 +132,8 @@ MainWindow::MainWindow(QWidget* parent)
     updateTree();
     updateInspector();
     updateStatus();
-    pushHistory();
+    pushHistory(true);
+    updateWindowTitle();
 }
 
 void MainWindow::createInterface()
@@ -267,6 +286,39 @@ void MainWindow::createInspectorDock()
                                   scaleFields_, scaleGroup, 0.001, 100000, 3, 0.1));
     layout->addWidget(scaleGroup);
 
+    primitiveGroup_ = new QGroupBox(QStringLiteral("Параметры примитива"), panel);
+    auto* primitiveLayout = new QFormLayout(primitiveGroup_);
+    for (int i = 0; i < 3; ++i) {
+        primitiveLabels_[static_cast<std::size_t>(i)] = new QLabel(primitiveGroup_);
+        primitiveFields_[static_cast<std::size_t>(i)] = makeNumberField(primitiveGroup_, 0.0, 10000000.0, 3, 1.0);
+        primitiveLayout->addRow(primitiveLabels_[static_cast<std::size_t>(i)], primitiveFields_[static_cast<std::size_t>(i)]);
+    }
+    primitiveGroup_->setVisible(false);
+    layout->addWidget(primitiveGroup_);
+
+    auto* geometryGroup = new QGroupBox(QStringLiteral("Геометрия и материал"), panel);
+    auto* geometryLayout = new QFormLayout(geometryGroup);
+    material_ = new QComboBox(geometryGroup);
+    for (const CadMaterial& entry : cadMaterials())
+        material_->addItem(entry.name, entry.id);
+    geometryLayout->addRow(QStringLiteral("Материал"), material_);
+    auto makeValueLabel = [geometryGroup]() {
+        auto* value = new QLabel(QStringLiteral("—"), geometryGroup);
+        value->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        return value;
+    };
+    areaValue_ = makeValueLabel();
+    volumeValue_ = makeValueLabel();
+    boundsValue_ = makeValueLabel();
+    densityValue_ = makeValueLabel();
+    massValue_ = makeValueLabel();
+    geometryLayout->addRow(QStringLiteral("Площадь"), areaValue_);
+    geometryLayout->addRow(QStringLiteral("Объём"), volumeValue_);
+    geometryLayout->addRow(QStringLiteral("Габариты"), boundsValue_);
+    geometryLayout->addRow(QStringLiteral("Плотность"), densityValue_);
+    geometryLayout->addRow(QStringLiteral("Масса"), massValue_);
+    layout->addWidget(geometryGroup);
+
     colorButton_ = new QPushButton(QStringLiteral("Цвет поверхности"), panel);
     layout->addWidget(colorButton_);
     layout->addStretch(1);
@@ -276,7 +328,11 @@ void MainWindow::createInspectorDock()
     note->setStyleSheet(QStringLiteral("color:#82919a;font-size:8pt;padding:8px;background:#182229;border-radius:5px;"));
     layout->addWidget(note);
 
-    dock->setWidget(panel);
+    auto* scrollArea = new QScrollArea(dock);
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setFrameShape(QFrame::NoFrame);
+    scrollArea->setWidget(panel);
+    dock->setWidget(scrollArea);
     addDockWidget(Qt::RightDockWidgetArea, dock);
 
     connect(objectName_, &QLineEdit::editingFinished, this, [this] {
@@ -291,10 +347,25 @@ void MainWindow::createInspectorDock()
         pushHistory();
     });
     connect(units_, &QComboBox::currentTextChanged, this, [this](const QString& unit) {
+        if (syncingInspector_)
+            return;
         document_.units = unit;
         updateInspector();
         pushHistory();
     });
+    connect(material_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int itemIndex) {
+        const int index = selectedIndex();
+        if (syncingInspector_ || index < 0 || itemIndex < 0)
+            return;
+        document_.objects[static_cast<std::size_t>(index)].materialId = material_->itemData(itemIndex).toString();
+        updateInspector();
+        pushHistory();
+    });
+    for (QDoubleSpinBox* field : primitiveFields_)
+        connect(field, &QDoubleSpinBox::editingFinished, this, [this] {
+            if (!syncingInspector_)
+                editPrimitiveParameters();
+        });
     for (int axis = 0; axis < 3; ++axis) {
         connect(positionFields_[static_cast<std::size_t>(axis)], qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, axis](double value) {
             const int index = selectedIndex();
@@ -356,8 +427,10 @@ void MainWindow::createMenusAndToolbar()
     openAction->setShortcut(QKeySequence::Open);
     QAction* importAction = fileMenu->addAction(QStringLiteral("Импорт CAD-файла…"));
     importAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+I")));
-    QAction* saveAction = fileMenu->addAction(QStringLiteral("Сохранить проект как…"));
+    QAction* saveAction = fileMenu->addAction(QStringLiteral("Сохранить проект"));
     saveAction->setShortcut(QKeySequence::Save);
+    QAction* saveAsAction = fileMenu->addAction(QStringLiteral("Сохранить проект как…"));
+    saveAsAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+S")));
     fileMenu->addSeparator();
     auto* exportMenu = fileMenu->addMenu(QStringLiteral("Экспортировать"));
     QAction* exportStlAction = exportMenu->addAction(QStringLiteral("STL · Aeros Engine / 3D-печать…"));
@@ -430,6 +503,8 @@ void MainWindow::createMenusAndToolbar()
     toolBar->addAction(fitAction);
     toolBar->addAction(gridAction);
 
+    QAction* updateAction = helpMenu->addAction(QStringLiteral("Проверить обновления…"));
+    helpMenu->addSeparator();
     QAction* compatibilityAction = helpMenu->addAction(QStringLiteral("Форматы и совместимость CAD"));
     QAction* aboutAction = helpMenu->addAction(QStringLiteral("О программе AoSCAD Studio"));
 
@@ -437,7 +512,8 @@ void MainWindow::createMenusAndToolbar()
     connect(openAction, &QAction::triggered, this, [this] { openProject(); });
     connect(importAction, &QAction::triggered, this, [this] { importFiles(); });
     connect(saveAction, &QAction::triggered, this, [this] { saveProject(); });
-    connect(quitAction, &QAction::triggered, qApp, &QApplication::quit);
+    connect(saveAsAction, &QAction::triggered, this, [this] { saveProject(true); });
+    connect(quitAction, &QAction::triggered, this, [this] { close(); });
     connect(exportStlAction, &QAction::triggered, this, [this] { exportTo(QStringLiteral("stl")); });
     connect(exportStepAction, &QAction::triggered, this, [this] { exportTo(QStringLiteral("step")); });
     connect(exportIgesAction, &QAction::triggered, this, [this] { exportTo(QStringLiteral("iges")); });
@@ -458,6 +534,7 @@ void MainWindow::createMenusAndToolbar()
     connect(topAction, &QAction::triggered, this, [this] { viewport_->setStandardView(QStringLiteral("top")); });
     connect(frontAction, &QAction::triggered, this, [this] { viewport_->setStandardView(QStringLiteral("front")); });
     connect(rightAction, &QAction::triggered, this, [this] { viewport_->setStandardView(QStringLiteral("right")); });
+    connect(updateAction, &QAction::triggered, this, [this] { launchUpdater(); });
     connect(compatibilityAction, &QAction::triggered, this, [this] { showCompatibilityHelp(); });
     connect(aboutAction, &QAction::triggered, this, [this] { showAbout(); });
 }
@@ -484,7 +561,7 @@ void MainWindow::connectActions()
     });
     connect(viewport_, &CadViewport::objectChanged, this, [this](bool committed) {
         updateTree();
-        updateInspector();
+        updateInspector(committed);
         if (committed)
             pushHistory();
     });
@@ -522,7 +599,7 @@ void MainWindow::updateTree()
     updateStatus();
 }
 
-void MainWindow::updateInspector()
+void MainWindow::updateInspector(bool updateMeasurements)
 {
     if (!units_)
         return;
@@ -540,6 +617,7 @@ void MainWindow::updateInspector()
     const bool hasObject = index >= 0 && static_cast<std::size_t>(index) < document_.objects.size();
     objectName_->setEnabled(hasObject);
     colorButton_->setEnabled(hasObject);
+    material_->setEnabled(hasObject);
     for (QDoubleSpinBox* field : positionFields_) field->setEnabled(hasObject);
     for (QDoubleSpinBox* field : rotationFields_) field->setEnabled(hasObject);
     for (QDoubleSpinBox* field : scaleFields_) field->setEnabled(hasObject);
@@ -563,24 +641,142 @@ void MainWindow::updateInspector()
             scaleFields_[i]->setValue(scale[axis]);
             scaleFields_[i]->setSuffix(QStringLiteral("×"));
         }
+
+        const QStringList parameterNames = primitiveParameterNames(object.primitiveType);
+        const bool isParametric = !parameterNames.isEmpty() &&
+                                  parameterNames.size() == static_cast<int>(object.primitiveParameters.size());
+        primitiveGroup_->setVisible(isParametric);
+        for (int i = 0; i < 3; ++i) {
+            const std::size_t parameterIndex = static_cast<std::size_t>(i);
+            const bool visible = isParametric && i < parameterNames.size();
+            primitiveLabels_[parameterIndex]->setVisible(visible);
+            primitiveFields_[parameterIndex]->setVisible(visible);
+            primitiveFields_[parameterIndex]->setEnabled(visible);
+            const QSignalBlocker parameterBlock(primitiveFields_[parameterIndex]);
+            if (visible) {
+                primitiveLabels_[parameterIndex]->setText(parameterNames[i]);
+                const double minimum = object.primitiveType == QStringLiteral("cone") && i == 1 ? 0.0 : 0.001;
+                primitiveFields_[parameterIndex]->setRange(minimum, 10000000.0);
+                primitiveFields_[parameterIndex]->setValue(object.primitiveParameters[parameterIndex] * factor);
+                primitiveFields_[parameterIndex]->setSuffix(QStringLiteral(" %1").arg(document_.units));
+            } else {
+                primitiveFields_[parameterIndex]->setValue(0.0);
+                primitiveFields_[parameterIndex]->setSuffix(QString());
+            }
+        }
+        {
+            const QSignalBlocker materialBlock(material_);
+            int materialIndex = material_->findData(object.materialId);
+            if (materialIndex < 0)
+                materialIndex = 0;
+            material_->setCurrentIndex(materialIndex);
+        }
         colorButton_->setText(object.color.name(QColor::HexRgb).toUpper());
         colorButton_->setStyleSheet(QStringLiteral("background:%1;color:%2;border:1px solid #53636b;padding:8px;border-radius:5px;")
                                         .arg(object.color.name(), object.color.lightness() > 140 ? QStringLiteral("#10171c") : QStringLiteral("white")));
+        if (updateMeasurements)
+            updatePhysicalInspector(object);
     } else {
         objectName_->clear();
+        primitiveGroup_->setVisible(false);
         colorButton_->setText(QStringLiteral("Цвет поверхности"));
         colorButton_->setStyleSheet(QString());
+        {
+            const QSignalBlocker materialBlock(material_);
+            material_->setCurrentIndex(0);
+        }
+        for (int i = 0; i < 3; ++i) {
+            const std::size_t parameterIndex = static_cast<std::size_t>(i);
+            primitiveLabels_[parameterIndex]->hide();
+            primitiveFields_[parameterIndex]->setEnabled(false);
+            const QSignalBlocker parameterBlock(primitiveFields_[parameterIndex]);
+            primitiveFields_[parameterIndex]->setValue(0.0);
+            primitiveFields_[parameterIndex]->setSuffix(QString());
+        }
         for (QDoubleSpinBox* field : positionFields_) field->setValue(0.0);
         for (QDoubleSpinBox* field : rotationFields_) field->setValue(0.0);
         for (QDoubleSpinBox* field : scaleFields_) field->setValue(1.0);
+        areaValue_->setText(QStringLiteral("—"));
+        volumeValue_->setText(QStringLiteral("—"));
+        boundsValue_->setText(QStringLiteral("—"));
+        densityValue_->setText(QStringLiteral("—"));
+        massValue_->setText(QStringLiteral("—"));
     }
     syncingInspector_ = false;
+}
+
+void MainWindow::updatePhysicalInspector(const CadObject& object)
+{
+    CadGeometryProperties properties;
+    try {
+        properties = CadIO::analyzeShape(object.worldShape());
+    } catch (const Standard_Failure&) {
+        areaValue_->setText(QStringLiteral("—"));
+        volumeValue_->setText(QStringLiteral("—"));
+        boundsValue_->setText(QStringLiteral("—"));
+        densityValue_->setText(QStringLiteral("—"));
+        massValue_->setText(QStringLiteral("—"));
+        return;
+    } catch (const std::exception&) {
+        areaValue_->setText(QStringLiteral("—"));
+        volumeValue_->setText(QStringLiteral("—"));
+        boundsValue_->setText(QStringLiteral("—"));
+        densityValue_->setText(QStringLiteral("—"));
+        massValue_->setText(QStringLiteral("—"));
+        return;
+    }
+
+    const double factor = unitFactor();
+    const QString unit = document_.units;
+    if (properties.surfaceAreaMm2 > 0.0 && std::isfinite(properties.surfaceAreaMm2)) {
+        areaValue_->setText(QStringLiteral("%1 %2²").arg(properties.surfaceAreaMm2 * factor * factor, 0, 'g', 6).arg(unit));
+    } else {
+        areaValue_->setText(QStringLiteral("—"));
+    }
+    if (properties.hasVolume) {
+        volumeValue_->setText(QStringLiteral("%1 %2³").arg(properties.volumeMm3 * factor * factor * factor, 0, 'g', 6).arg(unit));
+    } else {
+        volumeValue_->setText(QStringLiteral("нет данных"));
+    }
+    if (properties.hasBounds) {
+        boundsValue_->setText(QStringLiteral("%1 × %2 × %3 %4")
+                                  .arg(properties.boundsMm.x() * factor, 0, 'g', 5)
+                                  .arg(properties.boundsMm.y() * factor, 0, 'g', 5)
+                                  .arg(properties.boundsMm.z() * factor, 0, 'g', 5)
+                                  .arg(unit));
+    } else {
+        boundsValue_->setText(QStringLiteral("—"));
+    }
+
+    const double density = materialDensityKgPerM3(object.materialId);
+    if (density <= 0.0) {
+        densityValue_->setText(QStringLiteral("не задана"));
+        massValue_->setText(QStringLiteral("—"));
+    } else {
+        densityValue_->setText(QStringLiteral("%1 кг/м³").arg(density, 0, 'g', 5));
+        if (properties.hasVolume) {
+            const double massKg = properties.volumeMm3 * 1.0e-9 * density;
+            massValue_->setText(massKg < 1.0
+                                    ? QStringLiteral("%1 г (оценка)").arg(massKg * 1000.0, 0, 'g', 5)
+                                    : QStringLiteral("%1 кг (оценка)").arg(massKg, 0, 'g', 5));
+        } else {
+            massValue_->setText(QStringLiteral("нет данных"));
+        }
+    }
 }
 
 void MainWindow::updateStatus()
 {
     if (objectCountLabel_)
         objectCountLabel_->setText(QStringLiteral("%1 объект(ов)").arg(static_cast<qulonglong>(document_.objects.size())));
+}
+
+void MainWindow::updateWindowTitle()
+{
+    const QString documentTitle = projectPath_.isEmpty() ? document_.name : QFileInfo(projectPath_).fileName();
+    const QString modifiedMarker = savedHistoryIndex_ == historyIndex_ ? QString() : QStringLiteral(" *");
+    setWindowTitle(QStringLiteral("%1%2 — AoSCAD Studio %3 · C++")
+                       .arg(documentTitle, modifiedMarker, QCoreApplication::applicationVersion()));
 }
 
 void MainWindow::refreshViewport()
@@ -592,17 +788,38 @@ void MainWindow::refreshViewport()
     updateStatus();
 }
 
-void MainWindow::pushHistory()
+void MainWindow::pushHistory(bool markSaved)
 {
-    if (historyIndex_ + 1 < static_cast<int>(history_.size()))
+    if (historyIndex_ >= 0 && historyIndex_ < static_cast<int>(history_.size()) &&
+        sameDocumentState(history_[static_cast<std::size_t>(historyIndex_)], document_)) {
+        if (markSaved)
+            savedHistoryIndex_ = historyIndex_;
+        undoAction_->setEnabled(historyIndex_ > 0);
+        redoAction_->setEnabled(historyIndex_ + 1 < static_cast<int>(history_.size()));
+        updateStatus();
+        updateWindowTitle();
+        return;
+    }
+    if (historyIndex_ + 1 < static_cast<int>(history_.size())) {
+        if (savedHistoryIndex_ > historyIndex_)
+            savedHistoryIndex_ = -1;
         history_.erase(history_.begin() + historyIndex_ + 1, history_.end());
+    }
     history_.push_back(document_);
-    if (history_.size() > 50)
+    if (history_.size() > 50) {
+        if (savedHistoryIndex_ == 0)
+            savedHistoryIndex_ = -1;
+        else if (savedHistoryIndex_ > 0)
+            --savedHistoryIndex_;
         history_.erase(history_.begin());
+    }
     historyIndex_ = static_cast<int>(history_.size()) - 1;
+    if (markSaved)
+        savedHistoryIndex_ = historyIndex_;
     undoAction_->setEnabled(historyIndex_ > 0);
     redoAction_->setEnabled(false);
     updateStatus();
+    updateWindowTitle();
 }
 
 void MainWindow::restoreHistory(int index)
@@ -616,7 +833,31 @@ void MainWindow::restoreHistory(int index)
     updateInspector();
     undoAction_->setEnabled(historyIndex_ > 0);
     redoAction_->setEnabled(historyIndex_ + 1 < static_cast<int>(history_.size()));
+    updateWindowTitle();
     statusBar()->showMessage(QStringLiteral("Состояние восстановлено"), 2500);
+}
+
+bool MainWindow::confirmSaveChanges()
+{
+    if (QWidget* focusedWidget = QApplication::focusWidget(); focusedWidget && isAncestorOf(focusedWidget))
+        focusedWidget->clearFocus();
+    if (savedHistoryIndex_ == historyIndex_)
+        return true;
+    const QMessageBox::StandardButton answer = QMessageBox::warning(
+        this, QStringLiteral("Несохранённые изменения"),
+        QStringLiteral("В проекте есть несохранённые изменения. Сохранить их перед продолжением?"),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
+    if (answer == QMessageBox::Save)
+        return saveProject();
+    return answer == QMessageBox::Discard;
+}
+
+void MainWindow::closeEvent(QCloseEvent* event)
+{
+    if (confirmSaveChanges())
+        event->accept();
+    else
+        event->ignore();
 }
 
 int MainWindow::selectedIndex() const
@@ -647,24 +888,25 @@ QString MainWindow::uniqueName(const QString& base) const
 void MainWindow::addPrimitive(const QString& kind)
 {
     CadObject object;
+    object.primitiveType = kind;
     if (kind == QStringLiteral("box")) {
-        object.shape = BRepPrimAPI_MakeBox(40.0, 30.0, 24.0).Shape();
+        object.setPrimitiveParameters({40.0, 30.0, 24.0});
         object.name = uniqueName(QStringLiteral("Бокс"));
         object.color = QColor(115, 153, 170);
     } else if (kind == QStringLiteral("cylinder")) {
-        object.shape = BRepPrimAPI_MakeCylinder(15.0, 32.0).Shape();
+        object.setPrimitiveParameters({15.0, 32.0});
         object.name = uniqueName(QStringLiteral("Цилиндр"));
         object.color = QColor(91, 157, 157);
     } else if (kind == QStringLiteral("sphere")) {
-        object.shape = BRepPrimAPI_MakeSphere(18.0).Shape();
+        object.setPrimitiveParameters({18.0});
         object.name = uniqueName(QStringLiteral("Сфера"));
         object.color = QColor(112, 153, 183);
     } else if (kind == QStringLiteral("cone")) {
-        object.shape = BRepPrimAPI_MakeCone(17.0, 0.0, 34.0).Shape();
+        object.setPrimitiveParameters({17.0, 0.0, 34.0});
         object.name = uniqueName(QStringLiteral("Конус"));
         object.color = QColor(164, 133, 94);
     } else if (kind == QStringLiteral("torus")) {
-        object.shape = BRepPrimAPI_MakeTorus(18.0, 4.0).Shape();
+        object.setPrimitiveParameters({18.0, 4.0});
         object.name = uniqueName(QStringLiteral("Тор"));
         object.color = QColor(130, 157, 147);
     } else {
@@ -680,6 +922,45 @@ void MainWindow::addPrimitive(const QString& kind)
     pushHistory();
     viewport_->fitAll();
     statusBar()->showMessage(QStringLiteral("Добавлен объект: %1").arg(document_.objects.back().name), 2500);
+}
+
+void MainWindow::editPrimitiveParameters()
+{
+    const int index = selectedIndex();
+    if (index < 0 || static_cast<std::size_t>(index) >= document_.objects.size())
+        return;
+    CadObject& object = document_.objects[static_cast<std::size_t>(index)];
+    const int parameterCount = primitiveParameterCount(object.primitiveType);
+    if (parameterCount <= 0 || parameterCount != static_cast<int>(object.primitiveParameters.size()))
+        return;
+
+    std::vector<double> parameters;
+    parameters.reserve(static_cast<std::size_t>(parameterCount));
+    bool changed = false;
+    const double factor = unitFactor();
+    for (int i = 0; i < parameterCount; ++i) {
+        const double valueMm = primitiveFields_[static_cast<std::size_t>(i)]->value() / factor;
+        parameters.push_back(valueMm);
+        if (std::abs(valueMm - object.primitiveParameters[static_cast<std::size_t>(i)]) > 1.0e-8)
+            changed = true;
+    }
+    if (!changed)
+        return;
+
+    try {
+        object.setPrimitiveParameters(parameters);
+        viewport_->refreshGeometry();
+        updateTree();
+        updateInspector();
+        pushHistory();
+        statusBar()->showMessage(QStringLiteral("Параметры примитива обновлены"), 2500);
+    } catch (const CadError& error) {
+        QMessageBox::warning(this, QStringLiteral("Недопустимые размеры"), QString::fromUtf8(error.what()));
+        updateInspector();
+    } catch (const Standard_Failure& error) {
+        QMessageBox::warning(this, QStringLiteral("Ошибка построения"), QString::fromLocal8Bit(error.GetMessageString()));
+        updateInspector();
+    }
 }
 
 void MainWindow::importFiles()
@@ -719,16 +1000,18 @@ void MainWindow::openProject()
 {
     const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Открыть проект AoSCAD"), {},
                                                       QStringLiteral("Проект AoSCAD (*.aoscad);;Все файлы (*.*)"));
-    if (path.isEmpty())
+    if (path.isEmpty() || !confirmSaveChanges())
         return;
     try {
         document_ = CadIO::loadProject(path);
+        projectPath_ = QFileInfo(path).absoluteFilePath();
         history_.clear();
         historyIndex_ = -1;
+        savedHistoryIndex_ = -1;
         viewport_->setDocument(&document_);
         updateTree();
         updateInspector();
-        pushHistory();
+        pushHistory(true);
         viewport_->fitAll();
         statusBar()->showMessage(QStringLiteral("Проект открыт: %1").arg(QFileInfo(path).fileName()), 3500);
     } catch (const CadError& error) {
@@ -740,19 +1023,28 @@ void MainWindow::openProject()
     }
 }
 
-void MainWindow::saveProject()
+bool MainWindow::saveProject(bool saveAs)
 {
-    QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Сохранить проект AoSCAD"),
-                                                 document_.name + QStringLiteral(".aoscad"), saveFilter(QStringLiteral("aoscad")));
+    if (QWidget* focusedWidget = QApplication::focusWidget(); focusedWidget && isAncestorOf(focusedWidget))
+        focusedWidget->clearFocus();
+    QString path = projectPath_;
+    if (saveAs || path.isEmpty()) {
+        path = QFileDialog::getSaveFileName(this, QStringLiteral("Сохранить проект AoSCAD"),
+                                            document_.name + QStringLiteral(".aoscad"), saveFilter(QStringLiteral("aoscad")));
+    }
     if (path.isEmpty())
-        return;
+        return false;
     if (QFileInfo(path).suffix().isEmpty())
         path += QStringLiteral(".aoscad");
     try {
         document_.name = projectName_->text().trimmed().isEmpty() ? document_.name : projectName_->text().trimmed();
         CadIO::saveProject(document_, path);
+        projectPath_ = QFileInfo(path).absoluteFilePath();
+        savedHistoryIndex_ = historyIndex_;
         updateInspector();
+        updateWindowTitle();
         statusBar()->showMessage(QStringLiteral("Проект сохранён: %1").arg(QFileInfo(path).fileName()), 4000);
+        return true;
     } catch (const CadError& error) {
         QMessageBox::critical(this, QStringLiteral("Ошибка сохранения"), QString::fromUtf8(error.what()));
     } catch (const Standard_Failure& error) {
@@ -760,6 +1052,7 @@ void MainWindow::saveProject()
     } catch (const std::exception& error) {
         QMessageBox::critical(this, QStringLiteral("Ошибка сохранения"), QString::fromUtf8(error.what()));
     }
+    return false;
 }
 
 void MainWindow::exportTo(const QString& extension)
@@ -792,20 +1085,17 @@ void MainWindow::exportTo(const QString& extension)
 
 void MainWindow::newProject()
 {
-    if (!document_.objects.empty()) {
-        const auto answer = QMessageBox::question(this, QStringLiteral("Новый проект"),
-                                                  QStringLiteral("Создать пустой проект? Текущие изменения не сохранятся автоматически."),
-                                                  QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
-        if (answer != QMessageBox::Yes)
-            return;
-    }
+    if (!confirmSaveChanges())
+        return;
     document_ = CadDocument{};
+    projectPath_.clear();
     history_.clear();
     historyIndex_ = -1;
+    savedHistoryIndex_ = -1;
     viewport_->setDocument(&document_);
     updateTree();
     updateInspector();
-    pushHistory();
+    pushHistory(true);
 }
 
 void MainWindow::deleteSelected()
@@ -842,6 +1132,24 @@ void MainWindow::setTool(CadViewport::Tool tool)
     statusBar()->showMessage(QStringLiteral("Инструмент: %1").arg(names[static_cast<int>(tool)]), 1800);
 }
 
+void MainWindow::launchUpdater()
+{
+    const QString updaterPath = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("aoscad-updater.exe"));
+    if (!QFileInfo::exists(updaterPath)) {
+        QMessageBox::information(this, QStringLiteral("Обновление AoSCAD Studio"),
+                                 QStringLiteral("Автономный updater не найден. Установите приложение из полного Windows-пакета."));
+        return;
+    }
+    const QStringList arguments{
+        QStringLiteral("--parent-pid"),
+        QString::number(QCoreApplication::applicationPid())
+    };
+    if (!QProcess::startDetached(updaterPath, arguments, QCoreApplication::applicationDirPath())) {
+        QMessageBox::warning(this, QStringLiteral("Обновление AoSCAD Studio"),
+                             QStringLiteral("Не удалось запустить помощник обновления."));
+    }
+}
+
 void MainWindow::showCompatibilityHelp()
 {
     QMessageBox::information(this, QStringLiteral("Форматы и совместимость CAD"),
@@ -855,6 +1163,7 @@ void MainWindow::showCompatibilityHelp()
 void MainWindow::showAbout()
 {
     QMessageBox::about(this, QStringLiteral("AoSCAD Studio"),
-        QStringLiteral("<h3>AoSCAD Studio</h3><p>Независимая CAD-среда для просмотра, подготовки и обмена 3D-геометрией.</p>"
-                       "<p>Нативное приложение на C++ / Qt 6 / Open CASCADE.</p>"));
+        QStringLiteral("<h3>AoSCAD Studio %1</h3><p>Независимая CAD-среда для просмотра, подготовки и обмена 3D-геометрией.</p>"
+                       "<p>Нативное приложение на C++ / Qt 6 / Open CASCADE.</p>")
+            .arg(QCoreApplication::applicationVersion()));
 }

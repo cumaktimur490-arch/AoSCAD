@@ -7,6 +7,10 @@
 #include <QIcon>
 #include <QSurfaceFormat>
 
+#ifndef AOSCAD_VERSION
+#define AOSCAD_VERSION "0.3.0"
+#endif
+
 namespace {
 void setResourceEnvironment(const char* name, const QString& path)
 {
@@ -55,7 +59,7 @@ int main(int argc, char* argv[])
     QApplication application(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("AoSCAD Studio"));
     QCoreApplication::setOrganizationName(QStringLiteral("AoSCAD"));
-    QCoreApplication::setApplicationVersion(QStringLiteral("0.2.0"));
+    QCoreApplication::setApplicationVersion(QString::fromLatin1(AOSCAD_VERSION));
     configureOpenCascadeResources();
 
     const QString iconPath = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("assets/icon.png"));

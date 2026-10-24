@@ -1,5 +1,5 @@
 ﻿#define AppName "AoSCAD Studio"
-#define AppVersion "0.2.0"
+#define AppVersion "0.3.0"
 #define AppExe "aoscad-studio.exe"
 
 [Setup]
@@ -12,6 +12,8 @@ DefaultDirName={localappdata}\Programs\AoSCAD Studio
 DefaultGroupName=AoSCAD Studio
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+CloseApplications=yes
+RestartApplications=no
 ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
 SetupIconFile=..\assets\icon.ico
@@ -34,6 +36,7 @@ Source: "..\stage\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs crea
 
 [Icons]
 Name: "{autoprograms}\AoSCAD Studio"; Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"
+Name: "{autoprograms}\AoSCAD Studio — Проверить обновления"; Filename: "{app}\aoscad-updater.exe"; WorkingDir: "{app}"
 Name: "{autodesktop}\AoSCAD Studio"; Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]

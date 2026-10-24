@@ -98,6 +98,10 @@ jobs:
       - name: Package Windows installer
         shell: pwsh
         run: |
+          $projectLine = Select-String -Path 'CMakeLists.txt' -Pattern '^project\(AoSCADStudio VERSION ([0-9]+\.[0-9]+\.[0-9]+) LANGUAGES CXX\)$' | Select-Object -First 1
+          if (-not $projectLine) { throw 'Could not determine AoSCAD version from CMakeLists.txt.' }
+          $version = $projectLine.Matches[0].Groups[1].Value
+          $installerBase = "AoSCAD-Studio-Setup-$version-x64"
           $stage = Join-Path $PWD 'stage'
           $release = Join-Path $PWD 'release'
           if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
@@ -134,12 +138,22 @@ jobs:
           }
           if (-not $compilerPath) { throw 'Inno Setup compiler ISCC.exe was not found.' }
 
-          & $compilerPath "/O$release" '/FAoSCAD-Studio-Setup-0.2.0-x64' 'installer/aoscad.iss' 2>&1 | Tee-Object -FilePath native-build.log -Append
+          $updater = Join-Path $stage 'aoscad-updater.exe'
+          if (-not (Test-Path $updater)) { throw "Updater output missing from install stage: $updater" }
+          & $compilerPath "/O$release" "/F$installerBase" 'installer/aoscad.iss' 2>&1 | Tee-Object -FilePath native-build.log -Append
           $installerExitCode = $LASTEXITCODE
           if ($installerExitCode -ne 0) { exit $installerExitCode }
-          $installer = Join-Path $release 'AoSCAD-Studio-Setup-0.2.0-x64.exe'
+          $installer = Join-Path $release "$installerBase.exe"
           if (-not (Test-Path $installer)) { throw "Installer output missing: $installer" }
-          Write-Host "Created $installer"
+
+          $latestInstaller = Join-Path $release 'AoSCAD-Studio-Setup-Latest.exe'
+          Copy-Item $installer $latestInstaller -Force
+          $updaterAsset = Join-Path $release "AoSCAD-Studio-Updater-$version-x64.exe"
+          Copy-Item $updater $updaterAsset -Force
+          $sha256 = (Get-FileHash -Path $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          $updateInfo = [ordered]@{ version = $version; sha256 = $sha256 } | ConvertTo-Json -Compress
+          Set-Content -Path (Join-Path $release 'AoSCAD-Studio-UpdateInfo.json') -Value $updateInfo -Encoding Ascii
+          Write-Host "Created $installer, $updaterAsset and SHA-256 update manifest for v$version"
 
       - name: Surface build diagnostics
         if: failure()
@@ -195,7 +209,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: AoSCAD-Studio-Windows-x64
-          path: release/AoSCAD-Studio-Setup-0.2.0-x64.exe
+          path: release/*
           if-no-files-found: error
           retention-days: 30
 
@@ -206,4 +220,7 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
         shell: pwsh
         run: |
-          gh release upload $env:RELEASE_TAG 'release/AoSCAD-Studio-Setup-0.2.0-x64.exe' --clobber
+          $assets = @(Get-ChildItem -Path 'release' -File | ForEach-Object { $_.FullName })
+          gh release upload $env:RELEASE_TAG @assets --clobber
+          $uploadExitCode = $LASTEXITCODE
+          if ($uploadExitCode -ne 0) { exit $uploadExitCode }
