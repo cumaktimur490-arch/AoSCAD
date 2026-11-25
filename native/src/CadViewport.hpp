@@ -12,6 +12,7 @@
 
 #include <vector>
 
+class QKeyEvent;
 class QMouseEvent;
 class QWheelEvent;
 
@@ -20,6 +21,8 @@ class CadViewport final : public QOpenGLWidget, protected QOpenGLFunctions {
 
 public:
     enum class Tool { Select, Move, Rotate, Scale, Measure };
+    enum class ReferencePlane { None, XY, YZ, ZX };
+    enum class SketchTool { None, Rectangle, Circle };
 
     explicit CadViewport(CadDocument* document, QWidget* parent = nullptr);
     ~CadViewport() override;
@@ -30,15 +33,23 @@ public:
     void setTool(Tool tool);
     Tool tool() const { return tool_; }
     void setGridVisible(bool visible);
+    void setActiveReferencePlane(ReferencePlane plane);
+    ReferencePlane activeReferencePlane() const { return activeReferencePlane_; }
     void refreshGeometry();
     void fitAll();
     void setStandardView(const QString& viewName);
+    void beginSketch(SketchTool tool, ReferencePlane plane);
+    void cancelSketch();
+    void setPreviewShape(const TopoDS_Shape& shape);
+    void clearPreviewShape();
+    void setTemporarilyHiddenObject(int index);
 
 signals:
     void selectionChanged(int objectIndex);
     void objectChanged(bool committed);
     void measurementCompleted(double distanceMm);
     void worldPositionChanged(const QVector3D& position);
+    void sketchFinished(const QString& profileType, const QVector2D& origin, const QVector2D& size);
 
 protected:
     void initializeGL() override;
@@ -48,6 +59,7 @@ protected:
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
 
 private:
     struct Vertex {
@@ -65,18 +77,35 @@ private:
         QVector3D point;
         float distance{0.0F};
     };
+    struct LineBatch {
+        int objectIndex{-1};
+        int firstVertex{0};
+        int vertexCount{0};
+        QColor color;
+    };
 
     CadDocument* document_{nullptr};
     QOpenGLShaderProgram shader_;
     QOpenGLVertexArrayObject vertexArray_;
     QOpenGLBuffer vertexBuffer_{QOpenGLBuffer::VertexBuffer};
+    QOpenGLBuffer lineBuffer_{QOpenGLBuffer::VertexBuffer};
     QOpenGLBuffer gridBuffer_{QOpenGLBuffer::VertexBuffer};
     std::vector<Vertex> vertices_;
+    std::vector<Vertex> lineVertices_;
     std::vector<Vertex> gridVertices_;
     std::vector<Batch> batches_;
+    std::vector<LineBatch> lineBatches_;
+    TopoDS_Shape previewShape_;
     std::vector<CadTriangle> pickTriangles_;
     int selectedObject_{-1};
+    int temporarilyHiddenObject_{-1};
     Tool tool_{Tool::Select};
+    ReferencePlane activeReferencePlane_{ReferencePlane::None};
+    SketchTool sketchTool_{SketchTool::None};
+    bool sketchDrawing_{false};
+    QVector2D sketchStart_{};
+    QVector2D sketchCurrent_{};
+    QString currentViewName_{QStringLiteral("iso")};
     bool gridVisible_{true};
     bool glReady_{false};
 

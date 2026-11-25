@@ -95,6 +95,13 @@ jobs:
           $buildExitCode = $LASTEXITCODE
           if ($buildExitCode -ne 0) { exit $buildExitCode }
 
+      - name: Run C++ tests
+        shell: pwsh
+        run: |
+          ctest --test-dir build --build-config Release --output-on-failure 2>&1 | Tee-Object -FilePath native-build.log -Append
+          $testExitCode = $LASTEXITCODE
+          if ($testExitCode -ne 0) { exit $testExitCode }
+
       - name: Package Windows installer
         shell: pwsh
         run: |
@@ -140,7 +147,7 @@ jobs:
 
           $updater = Join-Path $stage 'aoscad-updater.exe'
           if (-not (Test-Path $updater)) { throw "Updater output missing from install stage: $updater" }
-          & $compilerPath "/O$release" "/F$installerBase" 'installer/aoscad.iss' 2>&1 | Tee-Object -FilePath native-build.log -Append
+          & $compilerPath "/O$release" "/F$installerBase" "/DAppVersion=$version" 'installer/aoscad.iss' 2>&1 | Tee-Object -FilePath native-build.log -Append
           $installerExitCode = $LASTEXITCODE
           if ($installerExitCode -ne 0) { exit $installerExitCode }
           $installer = Join-Path $release "$installerBase.exe"

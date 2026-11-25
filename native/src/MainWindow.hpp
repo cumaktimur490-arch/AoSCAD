@@ -18,6 +18,8 @@ class QTreeWidgetItem;
 class QComboBox;
 class QLabel;
 class QGroupBox;
+class QTableWidget;
+class QCheckBox;
 class QCloseEvent;
 
 class MainWindow final : public QMainWindow {
@@ -37,10 +39,19 @@ private:
     QComboBox* material_{nullptr};
     QPushButton* colorButton_{nullptr};
     QGroupBox* primitiveGroup_{nullptr};
+    QTableWidget* variablesTable_{nullptr};
+    QLabel* variablesErrorLabel_{nullptr};
+    QLabel* sketchConstraintsLabel_{nullptr};
+    QGroupBox* extrudeGroup_{nullptr};
+    QLineEdit* extrudeLengthField_{nullptr};
+    QCheckBox* symmetricExtrudeCheck_{nullptr};
+    QLabel* extrudeStatusLabel_{nullptr};
+    QPushButton* extrudeCommitButton_{nullptr};
+    QPushButton* editExtrudeButton_{nullptr};
     std::array<QDoubleSpinBox*, 3> positionFields_{};
     std::array<QDoubleSpinBox*, 3> rotationFields_{};
     std::array<QDoubleSpinBox*, 3> scaleFields_{};
-    std::array<QDoubleSpinBox*, 3> primitiveFields_{};
+    std::array<QLineEdit*, 3> primitiveFields_{};
     std::array<QLabel*, 3> primitiveLabels_{};
     QLabel* areaValue_{nullptr};
     QLabel* volumeValue_{nullptr};
@@ -56,6 +67,10 @@ private:
     int savedHistoryIndex_{-1};
     QString projectPath_;
     bool syncingInspector_{false};
+    bool populatingVariables_{false};
+    QString pendingExtrudeSketchId_;
+    QString pendingExtrudeTargetId_;
+    bool hasValidExtrudePreview_{false};
 
     void createInterface();
     void createMenusAndToolbar();
@@ -76,6 +91,16 @@ private:
     QString uniqueName(const QString& base) const;
     void addPrimitive(const QString& kind);
     void editPrimitiveParameters();
+    void startSketch(CadViewport::SketchTool tool);
+    void createSketch(const QString& profileType, const QVector2D& origin, const QVector2D& size);
+    void beginExtrudeForSelectedSketch();
+    void beginExtrudeEditForSelectedFeature();
+    void beginExtrude(const QString& sketchId, const QString& targetId = {});
+    void updateExtrudePreview();
+    void confirmExtrude();
+    void cancelExtrude();
+    void applyVariablesFromTable();
+    void updateVariablesTable();
     void importFiles();
     void openProject();
     bool saveProject(bool saveAs = false);

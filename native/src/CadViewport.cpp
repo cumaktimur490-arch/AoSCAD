@@ -1,16 +1,28 @@
 #include "CadViewport.hpp"
 
 #include <Standard_Failure.hxx>
+#include <BRepAdaptor_Curve.hxx>
+#include <GeomAbs_CurveType.hxx>
+#include <TopAbs_ShapeEnum.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopoDS_Edge.hxx>
+#include <TopoDS.hxx>
+#include <gp_Pnt.hxx>
 
 #include <QDebug>
+#include <QFont>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QOpenGLContext>
 #include <QOpenGLShader>
+#include <QPainter>
+#include <QPolygonF>
 #include <QVector4D>
 #include <QWheelEvent>
 #include <QtMath>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -48,6 +60,59 @@ bool rayTriangle(const QVector3D& origin,
     distance = QVector3D::dotProduct(edge2, q) * inverse;
     return distance >= 0.0F;
 }
+
+struct ViewCubeFace {
+    QString viewName;
+    QString label;
+    QPolygonF polygon;
+    QPointF labelPosition;
+};
+
+std::array<ViewCubeFace, 3> makeViewCubeFaces(int width, int height)
+{
+    const QPointF center(std::max(58, width - 60), std::min(68, std::max(48, height - 48)));
+    const auto point = [&center](qreal x, qreal y) { return center + QPointF(x, y); };
+    std::array<ViewCubeFace, 3> faces;
+
+    faces[0].viewName = QStringLiteral("top");
+    faces[0].label = QStringLiteral("ВЕРХ");
+    faces[0].polygon << point(0, -30) << point(27, -15) << point(0, 0) << point(-27, -15);
+    faces[0].labelPosition = point(-11, -15);
+
+    faces[1].viewName = QStringLiteral("front");
+    faces[1].label = QStringLiteral("ПЕРЕД");
+    faces[1].polygon << point(-27, -15) << point(0, 0) << point(0, 31) << point(-27, 16);
+    faces[1].labelPosition = point(-24, 10);
+
+    faces[2].viewName = QStringLiteral("right");
+    faces[2].label = QStringLiteral("ПРАВО");
+    faces[2].polygon << point(0, 0) << point(27, -15) << point(27, 16) << point(0, 31);
+    faces[2].labelPosition = point(2, 10);
+    return faces;
+}
+
+QString planeCode(CadViewport::ReferencePlane plane)
+{
+    switch (plane) {
+    case CadViewport::ReferencePlane::XY: return QStringLiteral("XY");
+    case CadViewport::ReferencePlane::YZ: return QStringLiteral("YZ");
+    case CadViewport::ReferencePlane::ZX: return QStringLiteral("ZX");
+    case CadViewport::ReferencePlane::None: break;
+    }
+    return QStringLiteral("XY");
+}
+
+QVector2D snapSketchPoint(const QVector2D& point)
+{
+    const auto snap = [](float value) {
+        constexpr float spacing = 5.0F;
+        float snapped = std::round(value / spacing) * spacing;
+        if (std::abs(snapped) < spacing * 0.5F)
+            snapped = 0.0F;
+        return snapped;
+    };
+    return QVector2D(snap(point.x()), snap(point.y()));
+}
 } // namespace
 
 CadViewport::Vertex CadViewport::makeVertex(const QVector3D& point, const QVector3D& normal)
@@ -70,6 +135,7 @@ CadViewport::~CadViewport()
         makeCurrent();
         vertexArray_.destroy();
         vertexBuffer_.destroy();
+        lineBuffer_.destroy();
         gridBuffer_.destroy();
         doneCurrent();
     }
@@ -79,6 +145,11 @@ void CadViewport::setDocument(CadDocument* document)
 {
     document_ = document;
     selectedObject_ = -1;
+    temporarilyHiddenObject_ = -1;
+    activeReferencePlane_ = ReferencePlane::None;
+    previewShape_.Nullify();
+    cancelSketch();
+    rebuildGrid();
     rebuildGeometry();
     update();
 }
@@ -87,7 +158,12 @@ void CadViewport::setSelectedObject(int index)
 {
     if (!document_ || index < 0 || static_cast<std::size_t>(index) >= document_->objects.size())
         index = -1;
-    if (selectedObject_ == index)
+    const bool clearedPlane = index >= 0 && activeReferencePlane_ != ReferencePlane::None;
+    if (index >= 0) {
+        cancelSketch();
+        activeReferencePlane_ = ReferencePlane::None;
+    }
+    if (selectedObject_ == index && !clearedPlane)
         return;
     selectedObject_ = index;
     update();
@@ -95,6 +171,7 @@ void CadViewport::setSelectedObject(int index)
 
 void CadViewport::setTool(Tool tool)
 {
+    cancelSketch();
     tool_ = tool;
     switch (tool_) {
     case Tool::Select: setCursor(Qt::ArrowCursor); break;
@@ -109,6 +186,15 @@ void CadViewport::setGridVisible(bool visible)
 {
     gridVisible_ = visible;
     update();
+}
+
+void CadViewport::setActiveReferencePlane(ReferencePlane plane)
+{
+    if (activeReferencePlane_ == plane)
+        return;
+    cancelSketch();
+    activeReferencePlane_ = plane;
+    rebuildGrid();
 }
 
 void CadViewport::refreshGeometry()
@@ -144,19 +230,73 @@ QMatrix4x4 CadViewport::viewMatrix() const
 void CadViewport::setStandardView(const QString& viewName)
 {
     if (viewName == QStringLiteral("top")) {
+        currentViewName_ = QStringLiteral("top");
         yawDegrees_ = -90.0F;
         pitchDegrees_ = 89.0F;
     } else if (viewName == QStringLiteral("front")) {
+        currentViewName_ = QStringLiteral("front");
         yawDegrees_ = -90.0F;
         pitchDegrees_ = 0.0F;
     } else if (viewName == QStringLiteral("right")) {
+        currentViewName_ = QStringLiteral("right");
         yawDegrees_ = 0.0F;
         pitchDegrees_ = 0.0F;
     } else {
+        currentViewName_ = QStringLiteral("iso");
         yawDegrees_ = -45.0F;
         pitchDegrees_ = 28.0F;
     }
     update();
+}
+
+void CadViewport::beginSketch(SketchTool tool, ReferencePlane plane)
+{
+    if (tool == SketchTool::None || plane == ReferencePlane::None)
+        return;
+    setActiveReferencePlane(plane);
+    sketchTool_ = tool;
+    sketchDrawing_ = false;
+    if (plane == ReferencePlane::XY)
+        setStandardView(QStringLiteral("top"));
+    else if (plane == ReferencePlane::YZ)
+        setStandardView(QStringLiteral("right"));
+    else
+        setStandardView(QStringLiteral("front"));
+    setCursor(Qt::CrossCursor);
+    setFocus();
+    update();
+}
+
+void CadViewport::cancelSketch()
+{
+    if (sketchTool_ == SketchTool::None && !sketchDrawing_)
+        return;
+    sketchTool_ = SketchTool::None;
+    sketchDrawing_ = false;
+    setCursor(Qt::ArrowCursor);
+    update();
+}
+
+void CadViewport::setPreviewShape(const TopoDS_Shape& shape)
+{
+    previewShape_ = shape;
+    rebuildGeometry();
+}
+
+void CadViewport::clearPreviewShape()
+{
+    previewShape_.Nullify();
+    rebuildGeometry();
+}
+
+void CadViewport::setTemporarilyHiddenObject(int index)
+{
+    if (!document_ || index < 0 || static_cast<std::size_t>(index) >= document_->objects.size())
+        index = -1;
+    if (temporarilyHiddenObject_ == index)
+        return;
+    temporarilyHiddenObject_ = index;
+    rebuildGeometry();
 }
 
 void CadViewport::initializeGL()
@@ -202,6 +342,7 @@ void CadViewport::initializeGL()
 
     vertexArray_.create();
     vertexBuffer_.create();
+    lineBuffer_.create();
     gridBuffer_.create();
     glReady_ = true;
     rebuildGrid();
@@ -246,68 +387,287 @@ void CadViewport::paintGL()
         shader_.setAttributeBuffer(1, GL_FLOAT, static_cast<int>(offsetof(Vertex, nx)), 3, sizeof(Vertex));
         shader_.setUniformValue("uLit", true);
         for (const Batch& batch : batches_) {
+            if (batch.objectIndex < 0)
+                continue;
             QColor color = batch.color;
             if (batch.objectIndex == selectedObject_)
                 color = QColor(103, 218, 192);
             shader_.setUniformValue("uColor", colorVector(color));
             glDrawArrays(GL_TRIANGLES, batch.firstVertex, batch.vertexCount);
         }
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_FALSE);
+        for (const Batch& batch : batches_) {
+            if (batch.objectIndex >= 0)
+                continue;
+            shader_.setUniformValue("uColor", colorVector(batch.color));
+            glDrawArrays(GL_TRIANGLES, batch.firstVertex, batch.vertexCount);
+        }
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
         vertexBuffer_.release();
+    }
+
+    if (lineBuffer_.isCreated() && !lineVertices_.empty()) {
+        lineBuffer_.bind();
+        shader_.enableAttributeArray(0);
+        shader_.enableAttributeArray(1);
+        shader_.setAttributeBuffer(0, GL_FLOAT, static_cast<int>(offsetof(Vertex, x)), 3, sizeof(Vertex));
+        shader_.setAttributeBuffer(1, GL_FLOAT, static_cast<int>(offsetof(Vertex, nx)), 3, sizeof(Vertex));
+        shader_.setUniformValue("uLit", false);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glLineWidth(1.5F);
+        for (const LineBatch& batch : lineBatches_) {
+            QColor color = batch.color;
+            if (batch.objectIndex >= 0 && batch.objectIndex == selectedObject_)
+                color = QColor(105, 237, 207);
+            shader_.setUniformValue("uColor", colorVector(color));
+            glDrawArrays(GL_LINES, batch.firstVertex, batch.vertexCount);
+        }
+        glDisable(GL_BLEND);
+        lineBuffer_.release();
     }
     shader_.disableAttributeArray(0);
     shader_.disableAttributeArray(1);
     shader_.release();
     vertexArray_.release();
+
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    QFont overlayFont = painter.font();
+    overlayFont.setPointSizeF(8.0);
+    overlayFont.setBold(true);
+    painter.setFont(overlayFont);
+
+    const auto projectPoint = [this, &viewProjection](const QVector3D& world, QPointF& screen) {
+        const QVector4D clip = viewProjection * QVector4D(world, 1.0F);
+        if (clip.w() <= 1.0e-4F)
+            return false;
+        const float x = clip.x() / clip.w();
+        const float y = clip.y() / clip.w();
+        screen = QPointF((x + 1.0F) * static_cast<float>(width()) * 0.5F,
+                         (1.0F - y) * static_cast<float>(height()) * 0.5F);
+        return true;
+    };
+
+    struct PlaneOverlay {
+        ReferencePlane plane;
+        QString label;
+        QColor color;
+        std::array<QVector3D, 4> corners;
+    };
+    constexpr float planeHalfSize = 70.0F;
+    const std::array<PlaneOverlay, 3> planes{{
+        {ReferencePlane::XY, QStringLiteral("XY"), QColor(95, 164, 207, 150),
+         {QVector3D(-planeHalfSize, -planeHalfSize, 0.0F), QVector3D(planeHalfSize, -planeHalfSize, 0.0F),
+          QVector3D(planeHalfSize, planeHalfSize, 0.0F), QVector3D(-planeHalfSize, planeHalfSize, 0.0F)}},
+        {ReferencePlane::YZ, QStringLiteral("YZ"), QColor(104, 197, 145, 150),
+         {QVector3D(0.0F, -planeHalfSize, -planeHalfSize), QVector3D(0.0F, planeHalfSize, -planeHalfSize),
+          QVector3D(0.0F, planeHalfSize, planeHalfSize), QVector3D(0.0F, -planeHalfSize, planeHalfSize)}},
+        {ReferencePlane::ZX, QStringLiteral("ZX"), QColor(221, 165, 94, 150),
+         {QVector3D(-planeHalfSize, 0.0F, -planeHalfSize), QVector3D(planeHalfSize, 0.0F, -planeHalfSize),
+          QVector3D(planeHalfSize, 0.0F, planeHalfSize), QVector3D(-planeHalfSize, 0.0F, planeHalfSize)}}
+    }};
+    for (const PlaneOverlay& plane : planes) {
+        QPolygonF polygon;
+        bool projected = true;
+        for (const QVector3D& corner : plane.corners) {
+            QPointF screen;
+            if (!projectPoint(corner, screen)) {
+                projected = false;
+                break;
+            }
+            polygon << screen;
+        }
+        if (!projected)
+            continue;
+
+        const bool active = plane.plane == activeReferencePlane_;
+        QColor color = active ? QColor(89, 213, 188, 230) : plane.color;
+        painter.setPen(QPen(color, active ? 2.0 : 1.0, active ? Qt::SolidLine : Qt::DashLine));
+        if (active)
+            painter.setBrush(QColor(89, 213, 188, 18));
+        else
+            painter.setBrush(Qt::NoBrush);
+        painter.drawPolygon(polygon);
+        const QPointF labelPosition = polygon.boundingRect().topLeft() + QPointF(5.0, 14.0);
+        painter.setPen(active ? QColor(157, 248, 224) : color);
+        painter.drawText(labelPosition, plane.label);
+    }
+
+    if (sketchTool_ != SketchTool::None && sketchDrawing_) {
+        QPolygonF profile;
+        QString dimensionText;
+        const QString plane = planeCode(activeReferencePlane_);
+        if (sketchTool_ == SketchTool::Rectangle) {
+            const float left = std::min(sketchStart_.x(), sketchCurrent_.x());
+            const float right = std::max(sketchStart_.x(), sketchCurrent_.x());
+            const float bottom = std::min(sketchStart_.y(), sketchCurrent_.y());
+            const float top = std::max(sketchStart_.y(), sketchCurrent_.y());
+            const QVector2D corners[]{QVector2D(left, bottom), QVector2D(right, bottom),
+                                      QVector2D(right, top), QVector2D(left, top), QVector2D(left, bottom)};
+            for (const QVector2D& corner : corners) {
+                QPointF screen;
+                if (projectPoint(cadSketchPointToWorld(plane, corner), screen))
+                    profile << screen;
+            }
+            dimensionText = QStringLiteral("%1 × %2 мм").arg(right - left, 0, 'g', 4).arg(top - bottom, 0, 'g', 4);
+        } else {
+            const float radius = (sketchCurrent_ - sketchStart_).length();
+            for (int i = 0; i <= 64; ++i) {
+                const float angle = 2.0F * kPi * static_cast<float>(i) / 64.0F;
+                const QVector2D point = sketchStart_ + QVector2D(std::cos(angle) * radius, std::sin(angle) * radius);
+                QPointF screen;
+                if (projectPoint(cadSketchPointToWorld(plane, point), screen))
+                    profile << screen;
+            }
+            dimensionText = QStringLiteral("R %1 мм").arg(radius, 0, 'g', 4);
+        }
+        if (profile.size() > 1) {
+            painter.setPen(QPen(QColor(105, 237, 207), 2.0, Qt::SolidLine));
+            painter.setBrush(QColor(67, 190, 162, 28));
+            painter.drawPolygon(profile);
+            painter.setPen(QColor(171, 255, 233));
+            painter.drawText(profile.boundingRect().bottomRight() + QPointF(8.0, 16.0), dimensionText);
+        }
+    }
+
+    const std::array<ViewCubeFace, 3> cubeFaces = makeViewCubeFaces(width(), height());
+    for (const ViewCubeFace& face : cubeFaces) {
+        const bool active = face.viewName == currentViewName_;
+        painter.setPen(QPen(active ? QColor(145, 244, 219) : QColor(95, 126, 140), 1.0));
+        painter.setBrush(active ? QColor(48, 112, 98, 235) : QColor(28, 43, 53, 225));
+        painter.drawPolygon(face.polygon);
+        painter.setPen(active ? QColor(236, 255, 249) : QColor(199, 216, 224));
+        painter.drawText(face.labelPosition, face.label);
+    }
+    painter.setPen(QColor(119, 148, 161));
+    painter.drawText(QPointF(width() - 105.0, 117.0), QStringLiteral("X   Y   Z"));
 }
 
 void CadViewport::rebuildGrid()
 {
     gridVertices_.clear();
-    constexpr int halfLines = 50;
-    constexpr float spacing = 10.0F;
+    constexpr int halfLines = 100;
+    constexpr float spacing = 5.0F;
+    const float extent = halfLines * spacing;
     for (int i = -halfLines; i <= halfLines; ++i) {
         const float at = static_cast<float>(i) * spacing;
-        gridVertices_.push_back(makeVertex(QVector3D(at, -halfLines * spacing, -0.1F), QVector3D(0, 0, 1)));
-        gridVertices_.push_back(makeVertex(QVector3D(at, halfLines * spacing, -0.1F), QVector3D(0, 0, 1)));
-        gridVertices_.push_back(makeVertex(QVector3D(-halfLines * spacing, at, -0.1F), QVector3D(0, 0, 1)));
-        gridVertices_.push_back(makeVertex(QVector3D(halfLines * spacing, at, -0.1F), QVector3D(0, 0, 1)));
+        if (activeReferencePlane_ == ReferencePlane::YZ) {
+            gridVertices_.push_back(makeVertex(QVector3D(-0.1F, at, -extent), QVector3D(1, 0, 0)));
+            gridVertices_.push_back(makeVertex(QVector3D(-0.1F, at, extent), QVector3D(1, 0, 0)));
+            gridVertices_.push_back(makeVertex(QVector3D(-0.1F, -extent, at), QVector3D(1, 0, 0)));
+            gridVertices_.push_back(makeVertex(QVector3D(-0.1F, extent, at), QVector3D(1, 0, 0)));
+        } else if (activeReferencePlane_ == ReferencePlane::ZX) {
+            gridVertices_.push_back(makeVertex(QVector3D(-extent, -0.1F, at), QVector3D(0, 1, 0)));
+            gridVertices_.push_back(makeVertex(QVector3D(extent, -0.1F, at), QVector3D(0, 1, 0)));
+            gridVertices_.push_back(makeVertex(QVector3D(at, -0.1F, -extent), QVector3D(0, 1, 0)));
+            gridVertices_.push_back(makeVertex(QVector3D(at, -0.1F, extent), QVector3D(0, 1, 0)));
+        } else {
+            gridVertices_.push_back(makeVertex(QVector3D(at, -extent, -0.1F), QVector3D(0, 0, 1)));
+            gridVertices_.push_back(makeVertex(QVector3D(at, extent, -0.1F), QVector3D(0, 0, 1)));
+            gridVertices_.push_back(makeVertex(QVector3D(-extent, at, -0.1F), QVector3D(0, 0, 1)));
+            gridVertices_.push_back(makeVertex(QVector3D(extent, at, -0.1F), QVector3D(0, 0, 1)));
+        }
     }
     uploadBuffers();
+    update();
 }
 
 void CadViewport::rebuildGeometry()
 {
     vertices_.clear();
+    lineVertices_.clear();
     batches_.clear();
+    lineBatches_.clear();
     pickTriangles_.clear();
-    if (!document_) {
-        uploadBuffers();
-        update();
-        return;
+
+    const auto appendEdges = [this](const TopoDS_Shape& shape, int objectIndex, const QColor& color) {
+        const int firstVertex = static_cast<int>(lineVertices_.size());
+        for (TopExp_Explorer explorer(shape, TopAbs_EDGE); explorer.More(); explorer.Next()) {
+            try {
+                const BRepAdaptor_Curve curve(TopoDS::Edge(explorer.Current()));
+                const double first = curve.FirstParameter();
+                const double last = curve.LastParameter();
+                if (!std::isfinite(first) || !std::isfinite(last) || std::abs(last - first) < 1.0e-12)
+                    continue;
+                int segments = 1;
+                if (curve.GetType() == GeomAbs_Circle)
+                    segments = 64;
+                else if (curve.GetType() != GeomAbs_Line)
+                    segments = 32;
+                gp_Pnt previous = curve.Value(first);
+                for (int segment = 1; segment <= segments; ++segment) {
+                    const double parameter = first + (last - first) * static_cast<double>(segment) / segments;
+                    const gp_Pnt current = curve.Value(parameter);
+                    const QVector3D a(static_cast<float>(previous.X()), static_cast<float>(previous.Y()), static_cast<float>(previous.Z()));
+                    const QVector3D b(static_cast<float>(current.X()), static_cast<float>(current.Y()), static_cast<float>(current.Z()));
+                    lineVertices_.push_back(makeVertex(a, QVector3D(0, 0, 1)));
+                    lineVertices_.push_back(makeVertex(b, QVector3D(0, 0, 1)));
+                    previous = current;
+                }
+            } catch (const Standard_Failure& error) {
+                qWarning() << "Could not create CAD edge overlay" << error.GetMessageString();
+            }
+        }
+        const int count = static_cast<int>(lineVertices_.size()) - firstVertex;
+        if (count > 0)
+            lineBatches_.push_back({objectIndex, firstVertex, count, color});
+    };
+
+    if (document_) {
+        for (std::size_t index = 0; index < document_->objects.size(); ++index) {
+            const CadObject& object = document_->objects[index];
+            if (static_cast<int>(index) == temporarilyHiddenObject_ || !object.visible ||
+                object.suppressed || object.shape.IsNull())
+                continue;
+            try {
+                const TopoDS_Shape worldShape = object.worldShape();
+                if (object.featureType == QStringLiteral("sketch")) {
+                    appendEdges(worldShape, static_cast<int>(index), object.color);
+                    continue;
+                }
+                const std::vector<CadTriangle> triangles = CadIO::triangulate(worldShape, index);
+                if (triangles.empty())
+                    continue;
+
+                Batch batch{static_cast<int>(index), static_cast<int>(vertices_.size()), 0, object.color};
+                for (const CadTriangle& triangle : triangles) {
+                    vertices_.push_back(makeVertex(triangle.a, triangle.normal));
+                    vertices_.push_back(makeVertex(triangle.b, triangle.normal));
+                    vertices_.push_back(makeVertex(triangle.c, triangle.normal));
+                }
+                batch.vertexCount = static_cast<int>(vertices_.size()) - batch.firstVertex;
+                batches_.push_back(batch);
+                pickTriangles_.insert(pickTriangles_.end(), triangles.begin(), triangles.end());
+            } catch (const Standard_Failure& error) {
+                qWarning() << "Could not tessellate CAD object" << object.name << error.GetMessageString();
+            } catch (const std::exception& error) {
+                qWarning() << "Could not tessellate CAD object" << object.name << error.what();
+            }
+        }
     }
 
-    for (std::size_t index = 0; index < document_->objects.size(); ++index) {
-        const CadObject& object = document_->objects[index];
-        if (!object.visible || object.shape.IsNull())
-            continue;
+    if (!previewShape_.IsNull()) {
         try {
-            const std::vector<CadTriangle> triangles = CadIO::triangulate(object.worldShape(), index);
-            if (triangles.empty())
-                continue;
-
-            Batch batch{static_cast<int>(index), static_cast<int>(vertices_.size()), 0, object.color};
-            for (const CadTriangle& triangle : triangles) {
-                vertices_.push_back(makeVertex(triangle.a, triangle.normal));
-                vertices_.push_back(makeVertex(triangle.b, triangle.normal));
-                vertices_.push_back(makeVertex(triangle.c, triangle.normal));
+            const std::vector<CadTriangle> previewTriangles = CadIO::triangulate(previewShape_);
+            if (!previewTriangles.empty()) {
+                Batch batch{-2, static_cast<int>(vertices_.size()), 0, QColor(75, 224, 193, 88)};
+                for (const CadTriangle& triangle : previewTriangles) {
+                    vertices_.push_back(makeVertex(triangle.a, triangle.normal));
+                    vertices_.push_back(makeVertex(triangle.b, triangle.normal));
+                    vertices_.push_back(makeVertex(triangle.c, triangle.normal));
+                }
+                batch.vertexCount = static_cast<int>(vertices_.size()) - batch.firstVertex;
+                batches_.push_back(batch);
             }
-            batch.vertexCount = static_cast<int>(vertices_.size()) - batch.firstVertex;
-            batches_.push_back(batch);
-            pickTriangles_.insert(pickTriangles_.end(), triangles.begin(), triangles.end());
+            appendEdges(previewShape_, -2, QColor(127, 255, 225, 235));
         } catch (const Standard_Failure& error) {
-            qWarning() << "Could not tessellate CAD object" << object.name << error.GetMessageString();
+            qWarning() << "Could not tessellate preview shape" << error.GetMessageString();
         } catch (const std::exception& error) {
-            qWarning() << "Could not tessellate CAD object" << object.name << error.what();
+            qWarning() << "Could not tessellate preview shape" << error.what();
         }
     }
 
@@ -328,6 +688,12 @@ void CadViewport::uploadBuffers()
         const std::size_t bytes = vertices_.size() * sizeof(Vertex);
         vertexBuffer_.allocate(vertices_.empty() ? nullptr : vertices_.data(), static_cast<int>(bytes));
         vertexBuffer_.release();
+    }
+    if (lineBuffer_.isCreated()) {
+        lineBuffer_.bind();
+        const std::size_t bytes = lineVertices_.size() * sizeof(Vertex);
+        lineBuffer_.allocate(lineVertices_.empty() ? nullptr : lineVertices_.data(), static_cast<int>(bytes));
+        lineBuffer_.release();
     }
     if (gridBuffer_.isCreated()) {
         gridBuffer_.bind();
@@ -400,6 +766,44 @@ CadViewport::PickResult CadViewport::pick(const QPoint& point) const
             closest.point = origin + direction * distance;
         }
     }
+    if (closest.objectIndex < 0 && !lineVertices_.empty()) {
+        const QMatrix4x4 viewProjection = projectionMatrix() * viewMatrix();
+        const auto toScreen = [this, &viewProjection](const Vertex& vertex, QVector2D& screen) {
+            const QVector4D clip = viewProjection * QVector4D(vertex.x, vertex.y, vertex.z, 1.0F);
+            if (clip.w() <= 1.0e-5F)
+                return false;
+            screen = QVector2D((clip.x() / clip.w() + 1.0F) * static_cast<float>(width()) * 0.5F,
+                               (1.0F - clip.y() / clip.w()) * static_cast<float>(height()) * 0.5F);
+            return true;
+        };
+        float bestPixelDistanceSquared = 36.0F;
+        const QVector2D cursor(static_cast<float>(point.x()), static_cast<float>(point.y()));
+        for (const LineBatch& batch : lineBatches_) {
+            if (batch.objectIndex < 0)
+                continue;
+            const int end = batch.firstVertex + batch.vertexCount;
+            for (int i = batch.firstVertex; i + 1 < end; i += 2) {
+                QVector2D a, b;
+                if (!toScreen(lineVertices_[static_cast<std::size_t>(i)], a) ||
+                    !toScreen(lineVertices_[static_cast<std::size_t>(i + 1)], b))
+                    continue;
+                const QVector2D segment = b - a;
+                const float lengthSquared = segment.lengthSquared();
+                const float t = lengthSquared > 1.0e-6F
+                    ? std::clamp(QVector2D::dotProduct(cursor - a, segment) / lengthSquared, 0.0F, 1.0F)
+                    : 0.0F;
+                const float pixelDistanceSquared = (cursor - (a + segment * t)).lengthSquared();
+                if (pixelDistanceSquared >= bestPixelDistanceSquared)
+                    continue;
+                bestPixelDistanceSquared = pixelDistanceSquared;
+                const Vertex& va = lineVertices_[static_cast<std::size_t>(i)];
+                const Vertex& vb = lineVertices_[static_cast<std::size_t>(i + 1)];
+                closest.objectIndex = batch.objectIndex;
+                closest.point = QVector3D(va.x, va.y, va.z) * (1.0F - t) + QVector3D(vb.x, vb.y, vb.z) * t;
+                closest.distance = (closest.point - cameraPosition()).length();
+            }
+        }
+    }
     if (closest.objectIndex < 0)
         closest.distance = 0.0F;
     return closest;
@@ -410,6 +814,8 @@ void CadViewport::beginObjectDrag(const QPoint& point)
     if (!document_ || selectedObject_ < 0 || static_cast<std::size_t>(selectedObject_) >= document_->objects.size())
         return;
     CadObject& object = document_->objects[static_cast<std::size_t>(selectedObject_)];
+    if (object.featureType == QStringLiteral("sketch"))
+        return;
     dragStartPosition_ = object.position;
     dragStartRotation_ = object.rotation;
     dragStartScale_ = object.scale;
@@ -472,6 +878,28 @@ void CadViewport::mousePressEvent(QMouseEvent* event)
     if (event->button() != Qt::LeftButton)
         return QOpenGLWidget::mousePressEvent(event);
 
+    for (const ViewCubeFace& face : makeViewCubeFaces(width(), height())) {
+        if (face.polygon.containsPoint(QPointF(point), Qt::OddEvenFill)) {
+            setStandardView(face.viewName);
+            event->accept();
+            return;
+        }
+    }
+
+    if (sketchTool_ != SketchTool::None) {
+        leftPressed_ = true;
+        QVector3D world;
+        const QString plane = planeCode(activeReferencePlane_);
+        if (planeIntersection(point, QVector3D(0, 0, 0), cadSketchPlaneNormal(plane), world)) {
+            sketchStart_ = snapSketchPoint(cadSketchPointFromWorld(plane, world));
+            sketchCurrent_ = sketchStart_;
+            sketchDrawing_ = true;
+            update();
+        }
+        event->accept();
+        return;
+    }
+
     leftPressed_ = true;
     if (tool_ == Tool::Measure) {
         PickResult result = pick(point);
@@ -514,6 +942,7 @@ void CadViewport::mouseMoveEvent(QMouseEvent* event)
     if (navigationButton_ == Qt::MiddleButton) {
         yawDegrees_ += static_cast<float>(delta.x()) * 0.45F;
         pitchDegrees_ = std::clamp(pitchDegrees_ + static_cast<float>(delta.y()) * 0.35F, -88.0F, 88.0F);
+        currentViewName_.clear();
         update();
     } else if (navigationButton_ == Qt::RightButton) {
         const float scale = cameraDistance_ * 2.0F * std::tan(qDegreesToRadians(kFieldOfView * 0.5F)) /
@@ -526,13 +955,25 @@ void CadViewport::mouseMoveEvent(QMouseEvent* event)
         const QVector3D up = QVector3D::crossProduct(right, forward).normalized();
         target_ += right * (-static_cast<float>(delta.x()) * scale) + up * (static_cast<float>(delta.y()) * scale);
         update();
+    } else if (sketchTool_ != SketchTool::None && sketchDrawing_) {
+        QVector3D world;
+        const QString plane = planeCode(activeReferencePlane_);
+        if (planeIntersection(point, QVector3D(0, 0, 0), cadSketchPlaneNormal(plane), world)) {
+            sketchCurrent_ = snapSketchPoint(cadSketchPointFromWorld(plane, world));
+            update();
+        }
     } else if (leftPressed_ && objectDrag_ && (point - pressPosition_).manhattanLength() > 1) {
         updateObjectDrag(point);
     }
 
     QVector3D position;
-    if (planeIntersection(point, 0.0F, position))
+    if (activeReferencePlane_ != ReferencePlane::None) {
+        const QString plane = planeCode(activeReferencePlane_);
+        if (planeIntersection(point, QVector3D(0, 0, 0), cadSketchPlaneNormal(plane), position))
+            emit worldPositionChanged(position);
+    } else if (planeIntersection(point, 0.0F, position)) {
         emit worldPositionChanged(position);
+    }
     lastPosition_ = point;
     event->accept();
 }
@@ -545,7 +986,44 @@ void CadViewport::mouseReleaseEvent(QMouseEvent* event)
         return;
     }
     if (event->button() == Qt::LeftButton) {
-        finishObjectDrag();
+        if (sketchTool_ != SketchTool::None && sketchDrawing_) {
+            QVector3D world;
+            const QString plane = planeCode(activeReferencePlane_);
+            if (planeIntersection(event->position().toPoint(), QVector3D(0, 0, 0), cadSketchPlaneNormal(plane), world))
+                sketchCurrent_ = snapSketchPoint(cadSketchPointFromWorld(plane, world));
+
+            QString profileType;
+            QVector2D origin;
+            QVector2D size;
+            if (sketchTool_ == SketchTool::Rectangle) {
+                const float left = std::min(sketchStart_.x(), sketchCurrent_.x());
+                const float right = std::max(sketchStart_.x(), sketchCurrent_.x());
+                const float bottom = std::min(sketchStart_.y(), sketchCurrent_.y());
+                const float top = std::max(sketchStart_.y(), sketchCurrent_.y());
+                origin = QVector2D(left, bottom);
+                size = QVector2D(right - left, top - bottom);
+                if (size.x() > 0.1F && size.y() > 0.1F)
+                    profileType = QStringLiteral("sketch-rectangle");
+            } else if (sketchTool_ == SketchTool::Circle) {
+                const float radius = (sketchCurrent_ - sketchStart_).length();
+                origin = sketchStart_;
+                size = QVector2D(radius, 0.0F);
+                if (radius > 0.1F)
+                    profileType = QStringLiteral("sketch-circle");
+            }
+
+            sketchDrawing_ = false;
+            if (!profileType.isEmpty()) {
+                sketchTool_ = SketchTool::None;
+                setCursor(Qt::ArrowCursor);
+                emit sketchFinished(profileType, origin, size);
+            } else {
+                emit sketchFinished(QString(), QVector2D(), QVector2D());
+            }
+            update();
+        } else {
+            finishObjectDrag();
+        }
         leftPressed_ = false;
         event->accept();
         return;
@@ -561,9 +1039,20 @@ void CadViewport::wheelEvent(QWheelEvent* event)
     event->accept();
 }
 
+void CadViewport::keyPressEvent(QKeyEvent* event)
+{
+    if (event->key() == Qt::Key_Escape && sketchTool_ != SketchTool::None) {
+        cancelSketch();
+        emit sketchFinished(QString(), QVector2D(), QVector2D());
+        event->accept();
+        return;
+    }
+    QOpenGLWidget::keyPressEvent(event);
+}
+
 void CadViewport::fitAll()
 {
-    if (pickTriangles_.empty()) {
+    if (pickTriangles_.empty() && lineVertices_.empty()) {
         target_ = QVector3D(0, 0, 0);
         cameraDistance_ = 320.0F;
         update();
@@ -585,6 +1074,8 @@ void CadViewport::fitAll()
         include(triangle.b);
         include(triangle.c);
     }
+    for (const Vertex& vertex : lineVertices_)
+        include(QVector3D(vertex.x, vertex.y, vertex.z));
 
     target_ = (minimum + maximum) * 0.5F;
     const QVector3D size = maximum - minimum;

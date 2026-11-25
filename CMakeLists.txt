@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(AoSCADStudio VERSION 0.3.0 LANGUAGES CXX)
+project(AoSCADStudio VERSION 0.4.0 LANGUAGES CXX)
 
 if(WIN32)
     enable_language(RC)
@@ -24,6 +24,8 @@ qt_add_executable(aoscad-studio WIN32
     native/src/MainWindow.hpp
     native/src/CadModel.cpp
     native/src/CadModel.hpp
+    native/src/ExpressionParser.cpp
+    native/src/ExpressionParser.hpp
     native/src/CadViewport.cpp
     native/src/CadViewport.hpp
 )
@@ -54,6 +56,42 @@ if(MSVC)
     target_compile_options(aoscad-studio PRIVATE /W4 /permissive- /utf-8)
 else()
     target_compile_options(aoscad-studio PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(aoscad-expression-tests
+        native/tests/ExpressionParserTests.cpp
+        native/src/ExpressionParser.cpp
+        native/src/ExpressionParser.hpp
+    )
+    target_include_directories(aoscad-expression-tests PRIVATE native/src)
+    target_link_libraries(aoscad-expression-tests PRIVATE Qt6::Core)
+    if(MSVC)
+        target_compile_options(aoscad-expression-tests PRIVATE /W4 /permissive- /utf-8)
+    else()
+        target_compile_options(aoscad-expression-tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME expression-parser COMMAND aoscad-expression-tests)
+
+    add_executable(aoscad-model-tests
+        native/tests/CadModelTests.cpp
+        native/src/CadModel.cpp
+        native/src/CadModel.hpp
+        native/src/ExpressionParser.cpp
+        native/src/ExpressionParser.hpp
+    )
+    target_include_directories(aoscad-model-tests PRIVATE native/src ${OpenCASCADE_INCLUDE_DIR})
+    if(OpenCASCADE_LIBRARY_DIR)
+        target_link_directories(aoscad-model-tests PRIVATE ${OpenCASCADE_LIBRARY_DIR})
+    endif()
+    target_link_libraries(aoscad-model-tests PRIVATE Qt6::Core Qt6::Gui ${OpenCASCADE_LIBRARIES})
+    if(MSVC)
+        target_compile_options(aoscad-model-tests PRIVATE /W4 /permissive- /utf-8)
+    else()
+        target_compile_options(aoscad-model-tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME cad-model-integration COMMAND aoscad-model-tests)
 endif()
 
 add_custom_command(TARGET aoscad-studio POST_BUILD

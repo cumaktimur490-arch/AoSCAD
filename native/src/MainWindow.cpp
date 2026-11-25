@@ -1,4 +1,5 @@
 #include "MainWindow.hpp"
+#include "ExpressionParser.hpp"
 
 #include <Standard_Failure.hxx>
 
@@ -8,11 +9,13 @@
 #include <QCoreApplication>
 #include <QColorDialog>
 #include <QComboBox>
+#include <QCheckBox>
 #include <QCloseEvent>
 #include <QDoubleSpinBox>
 #include <QDir>
 #include <QFileInfo>
 #include <QGroupBox>
+#include <QHeaderView>
 #include <QAbstractSpinBox>
 #include <QAbstractItemView>
 #include <QSet>
@@ -29,6 +32,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QScrollArea>
 #include <QFrame>
 #include <QSignalBlocker>
@@ -37,6 +41,7 @@
 #include <QStyle>
 #include <QToolBar>
 #include <QTreeWidget>
+#include <QTableWidget>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -46,19 +51,29 @@
 #include <utility>
 
 namespace {
+constexpr int kTreeNodeTypeRole = Qt::UserRole + 1;
+constexpr int kReferencePlaneRole = Qt::UserRole + 2;
+
+enum class TreeNodeType { Origin, ReferencePlane, Object };
+
 bool sameDocumentState(const CadDocument& left, const CadDocument& right)
 {
-    if (left.name != right.name || left.units != right.units || left.objects.size() != right.objects.size())
+    if (left.name != right.name || left.units != right.units || left.variables != right.variables ||
+        left.objects.size() != right.objects.size())
         return false;
     for (std::size_t i = 0; i < left.objects.size(); ++i) {
         const CadObject& a = left.objects[i];
         const CadObject& b = right.objects[i];
-        if (a.name != b.name || a.color != b.color || a.position != b.position ||
+        if (a.id != b.id || a.name != b.name || a.featureType != b.featureType || a.inputs != b.inputs ||
+            a.suppressed != b.suppressed || a.color != b.color || a.position != b.position ||
             a.rotation != b.rotation || a.scale != b.scale || a.visible != b.visible ||
             a.primitiveType != b.primitiveType || a.primitiveParameters != b.primitiveParameters ||
+            a.parameterExpressions != b.parameterExpressions || a.sketchPlane != b.sketchPlane ||
+            a.sketchOrigin != b.sketchOrigin || a.sketchConstraints != b.sketchConstraints ||
+            a.symmetricExtrude != b.symmetricExtrude ||
             a.materialId != b.materialId || a.shape.IsNull() != b.shape.IsNull())
             return false;
-        if (!a.shape.IsNull() && !a.shape.IsSame(b.shape))
+        if (a.featureType == QStringLiteral("imported-body") && !a.shape.IsNull() && !a.shape.IsSame(b.shape))
             return false;
     }
     return true;
@@ -223,12 +238,33 @@ void MainWindow::createProjectDock()
         }
     });
     connect(tree_, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem* current) {
-        const int index = current ? current->data(0, Qt::UserRole).toInt() : -1;
-        viewport_->setSelectedObject(index);
+        const auto nodeType = current
+            ? static_cast<TreeNodeType>(current->data(0, kTreeNodeTypeRole).toInt())
+            : TreeNodeType::Origin;
+        if (nodeType == TreeNodeType::ReferencePlane) {
+            const auto plane = static_cast<CadViewport::ReferencePlane>(
+                current->data(0, kReferencePlaneRole).toInt());
+            viewport_->setSelectedObject(-1);
+            viewport_->setActiveReferencePlane(plane);
+            if (plane == CadViewport::ReferencePlane::XY)
+                viewport_->setStandardView(QStringLiteral("top"));
+            else if (plane == CadViewport::ReferencePlane::YZ)
+                viewport_->setStandardView(QStringLiteral("right"));
+            else if (plane == CadViewport::ReferencePlane::ZX)
+                viewport_->setStandardView(QStringLiteral("front"));
+            statusBar()->showMessage(QStringLiteral("Выбрана опорная плоскость %1").arg(current->text(0)), 4000);
+        } else {
+            viewport_->setActiveReferencePlane(CadViewport::ReferencePlane::None);
+            const int index = nodeType == TreeNodeType::Object && current
+                ? current->data(0, Qt::UserRole).toInt()
+                : -1;
+            viewport_->setSelectedObject(index);
+        }
         updateInspector();
     });
     connect(tree_, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* item, int column) {
-        if (column != 0 || !item)
+        if (column != 0 || !item ||
+            item->data(0, kTreeNodeTypeRole).toInt() != static_cast<int>(TreeNodeType::Object))
             return;
         const int index = item->data(0, Qt::UserRole).toInt();
         if (index < 0 || static_cast<std::size_t>(index) >= document_.objects.size())
@@ -260,6 +296,35 @@ void MainWindow::createInspectorDock()
     unitLayout->addWidget(units_, 1);
     layout->addWidget(unitRow);
 
+    auto* variablesGroup = new QGroupBox(QStringLiteral("Параметры проекта"), panel);
+    auto* variablesLayout = new QVBoxLayout(variablesGroup);
+    variablesLayout->setContentsMargins(8, 10, 8, 8);
+    variablesLayout->setSpacing(5);
+    variablesTable_ = new QTableWidget(0, 2, variablesGroup);
+    variablesTable_->setHorizontalHeaderLabels({QStringLiteral("Имя"), QStringLiteral("Формула")});
+    variablesTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    variablesTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    variablesTable_->verticalHeader()->setVisible(false);
+    variablesTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    variablesTable_->setSelectionMode(QAbstractItemView::SingleSelection);
+    variablesTable_->setMinimumHeight(74);
+    variablesTable_->setMaximumHeight(132);
+    variablesTable_->setToolTip(QStringLiteral("Формулы: +, -, *, /, ^, скобки, sin/cos/sqrt/min/max. Пример: L = 120, W = L/2."));
+    variablesLayout->addWidget(variablesTable_);
+    auto* variableButtons = new QWidget(variablesGroup);
+    auto* variableButtonsLayout = new QHBoxLayout(variableButtons);
+    variableButtonsLayout->setContentsMargins(0, 0, 0, 0);
+    auto* addVariableButton = new QPushButton(QStringLiteral("＋ Переменная"), variableButtons);
+    auto* removeVariableButton = new QPushButton(QStringLiteral("− Удалить"), variableButtons);
+    variableButtonsLayout->addWidget(addVariableButton);
+    variableButtonsLayout->addWidget(removeVariableButton);
+    variablesLayout->addWidget(variableButtons);
+    variablesErrorLabel_ = new QLabel(variablesGroup);
+    variablesErrorLabel_->setWordWrap(true);
+    variablesErrorLabel_->setStyleSheet(QStringLiteral("color:#f08a83;font-size:8pt;"));
+    variablesLayout->addWidget(variablesErrorLabel_);
+    layout->addWidget(variablesGroup);
+
     auto* objectTitle = new QLabel(QStringLiteral("ОБЪЕКТ"), panel);
     objectTitle->setStyleSheet(QStringLiteral("color:#7f9099;font-size:8pt;font-weight:700;letter-spacing:1px;margin-top:8px;"));
     layout->addWidget(objectTitle);
@@ -286,15 +351,50 @@ void MainWindow::createInspectorDock()
                                   scaleFields_, scaleGroup, 0.001, 100000, 3, 0.1));
     layout->addWidget(scaleGroup);
 
-    primitiveGroup_ = new QGroupBox(QStringLiteral("Параметры примитива"), panel);
+    primitiveGroup_ = new QGroupBox(QStringLiteral("Параметры фичи · мм"), panel);
     auto* primitiveLayout = new QFormLayout(primitiveGroup_);
     for (int i = 0; i < 3; ++i) {
         primitiveLabels_[static_cast<std::size_t>(i)] = new QLabel(primitiveGroup_);
-        primitiveFields_[static_cast<std::size_t>(i)] = makeNumberField(primitiveGroup_, 0.0, 10000000.0, 3, 1.0);
+        primitiveFields_[static_cast<std::size_t>(i)] = new QLineEdit(primitiveGroup_);
+        primitiveFields_[static_cast<std::size_t>(i)]->setPlaceholderText(QStringLiteral("число или формула"));
         primitiveLayout->addRow(primitiveLabels_[static_cast<std::size_t>(i)], primitiveFields_[static_cast<std::size_t>(i)]);
     }
     primitiveGroup_->setVisible(false);
     layout->addWidget(primitiveGroup_);
+
+    sketchConstraintsLabel_ = new QLabel(panel);
+    sketchConstraintsLabel_->setWordWrap(true);
+    sketchConstraintsLabel_->setStyleSheet(QStringLiteral("color:#9db9b4;font-size:8pt;padding:6px;background:#182229;border-radius:5px;"));
+    sketchConstraintsLabel_->setVisible(false);
+    layout->addWidget(sketchConstraintsLabel_);
+
+    editExtrudeButton_ = new QPushButton(QStringLiteral("Предпросмотр / изменить выдавливание"), panel);
+    editExtrudeButton_->setVisible(false);
+    layout->addWidget(editExtrudeButton_);
+
+    extrudeGroup_ = new QGroupBox(QStringLiteral("Выдавливание · предпросмотр"), panel);
+    auto* extrudeLayout = new QVBoxLayout(extrudeGroup_);
+    auto* extrudeForm = new QFormLayout;
+    extrudeLengthField_ = new QLineEdit(extrudeGroup_);
+    extrudeLengthField_->setPlaceholderText(QStringLiteral("например, L/2"));
+    extrudeForm->addRow(QStringLiteral("Длина · мм"), extrudeLengthField_);
+    extrudeLayout->addLayout(extrudeForm);
+    symmetricExtrudeCheck_ = new QCheckBox(QStringLiteral("Симметрично относительно эскиза"), extrudeGroup_);
+    extrudeLayout->addWidget(symmetricExtrudeCheck_);
+    extrudeStatusLabel_ = new QLabel(extrudeGroup_);
+    extrudeStatusLabel_->setWordWrap(true);
+    extrudeLayout->addWidget(extrudeStatusLabel_);
+    auto* extrudeButtons = new QWidget(extrudeGroup_);
+    auto* extrudeButtonsLayout = new QHBoxLayout(extrudeButtons);
+    extrudeButtonsLayout->setContentsMargins(0, 0, 0, 0);
+    extrudeCommitButton_ = new QPushButton(QStringLiteral("✓ Применить"), extrudeButtons);
+    extrudeCommitButton_->setObjectName(QStringLiteral("accentButton"));
+    auto* extrudeCancelButton = new QPushButton(QStringLiteral("Отмена"), extrudeButtons);
+    extrudeButtonsLayout->addWidget(extrudeCommitButton_);
+    extrudeButtonsLayout->addWidget(extrudeCancelButton);
+    extrudeLayout->addWidget(extrudeButtons);
+    extrudeGroup_->setVisible(false);
+    layout->addWidget(extrudeGroup_);
 
     auto* geometryGroup = new QGroupBox(QStringLiteral("Геометрия и материал"), panel);
     auto* geometryLayout = new QFormLayout(geometryGroup);
@@ -361,11 +461,50 @@ void MainWindow::createInspectorDock()
         updateInspector();
         pushHistory();
     });
-    for (QDoubleSpinBox* field : primitiveFields_)
-        connect(field, &QDoubleSpinBox::editingFinished, this, [this] {
+    connect(variablesTable_, &QTableWidget::cellChanged, this, [this] {
+        if (!populatingVariables_)
+            applyVariablesFromTable();
+    });
+    connect(addVariableButton, &QPushButton::clicked, this, [this] {
+        QSet<QString> names;
+        for (int row = 0; row < variablesTable_->rowCount(); ++row) {
+            if (QTableWidgetItem* item = variablesTable_->item(row, 0))
+                names.insert(item->text().trimmed());
+        }
+        QString name;
+        for (int suffix = 1; suffix < 10000; ++suffix) {
+            name = QStringLiteral("Param%1").arg(suffix);
+            if (!names.contains(name))
+                break;
+        }
+        populatingVariables_ = true;
+        const int row = variablesTable_->rowCount();
+        variablesTable_->insertRow(row);
+        variablesTable_->setItem(row, 0, new QTableWidgetItem(name));
+        variablesTable_->setItem(row, 1, new QTableWidgetItem(QStringLiteral("1")));
+        variablesTable_->setCurrentCell(row, 0);
+        populatingVariables_ = false;
+        applyVariablesFromTable();
+    });
+    connect(removeVariableButton, &QPushButton::clicked, this, [this] {
+        const int row = variablesTable_->currentRow();
+        if (row < 0)
+            return;
+        populatingVariables_ = true;
+        variablesTable_->removeRow(row);
+        populatingVariables_ = false;
+        applyVariablesFromTable();
+    });
+    for (QLineEdit* field : primitiveFields_)
+        connect(field, &QLineEdit::editingFinished, this, [this] {
             if (!syncingInspector_)
                 editPrimitiveParameters();
         });
+    connect(extrudeLengthField_, &QLineEdit::textChanged, this, [this] { updateExtrudePreview(); });
+    connect(symmetricExtrudeCheck_, &QCheckBox::toggled, this, [this] { updateExtrudePreview(); });
+    connect(extrudeCommitButton_, &QPushButton::clicked, this, [this] { confirmExtrude(); });
+    connect(extrudeCancelButton, &QPushButton::clicked, this, [this] { cancelExtrude(); });
+    connect(editExtrudeButton_, &QPushButton::clicked, this, [this] { beginExtrudeEditForSelectedFeature(); });
     for (int axis = 0; axis < 3; ++axis) {
         connect(positionFields_[static_cast<std::size_t>(axis)], qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, axis](double value) {
             const int index = selectedIndex();
@@ -374,6 +513,8 @@ void MainWindow::createInspectorDock()
             object.position[axis] = static_cast<float>(value / unitFactor());
             viewport_->refreshGeometry();
             updateTree();
+            if (!pendingExtrudeSketchId_.isEmpty())
+                updateExtrudePreview();
         });
         connect(rotationFields_[static_cast<std::size_t>(axis)], qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, axis](double value) {
             const int index = selectedIndex();
@@ -381,6 +522,8 @@ void MainWindow::createInspectorDock()
             document_.objects[static_cast<std::size_t>(index)].rotation[axis] = static_cast<float>(value);
             viewport_->refreshGeometry();
             updateTree();
+            if (!pendingExtrudeSketchId_.isEmpty())
+                updateExtrudePreview();
         });
         connect(scaleFields_[static_cast<std::size_t>(axis)], qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, axis](double value) {
             const int index = selectedIndex();
@@ -388,6 +531,8 @@ void MainWindow::createInspectorDock()
             document_.objects[static_cast<std::size_t>(index)].scale[axis] = static_cast<float>(std::max(0.001, value));
             viewport_->refreshGeometry();
             updateTree();
+            if (!pendingExtrudeSketchId_.isEmpty())
+                updateExtrudePreview();
         });
         connect(positionFields_[static_cast<std::size_t>(axis)], &QDoubleSpinBox::editingFinished, this, [this] { if (!syncingInspector_) pushHistory(); });
         connect(rotationFields_[static_cast<std::size_t>(axis)], &QDoubleSpinBox::editingFinished, this, [this] { if (!syncingInspector_) pushHistory(); });
@@ -484,11 +629,19 @@ void MainWindow::createMenusAndToolbar()
     QAction* sphereAction = insertMenu->addAction(QStringLiteral("Сфера"));
     QAction* coneAction = insertMenu->addAction(QStringLiteral("Конус"));
     QAction* torusAction = insertMenu->addAction(QStringLiteral("Тор"));
+    insertMenu->addSeparator();
+    QAction* rectangleSketchAction = insertMenu->addAction(QStringLiteral("Эскиз · прямоугольник"));
+    QAction* circleSketchAction = insertMenu->addAction(QStringLiteral("Эскиз · окружность"));
+    QAction* extrudeAction = insertMenu->addAction(QStringLiteral("Выдавливание…"));
     toolBar->addAction(boxAction);
     toolBar->addAction(cylinderAction);
     toolBar->addAction(sphereAction);
     toolBar->addAction(coneAction);
     toolBar->addAction(torusAction);
+    toolBar->addSeparator();
+    toolBar->addAction(rectangleSketchAction);
+    toolBar->addAction(circleSketchAction);
+    toolBar->addAction(extrudeAction);
 
     QAction* fitAction = viewMenu->addAction(QStringLiteral("Вписать модель"));
     fitAction->setShortcut(QKeySequence(QStringLiteral("F")));
@@ -528,6 +681,9 @@ void MainWindow::createMenusAndToolbar()
     connect(sphereAction, &QAction::triggered, this, [this] { addPrimitive(QStringLiteral("sphere")); });
     connect(coneAction, &QAction::triggered, this, [this] { addPrimitive(QStringLiteral("cone")); });
     connect(torusAction, &QAction::triggered, this, [this] { addPrimitive(QStringLiteral("torus")); });
+    connect(rectangleSketchAction, &QAction::triggered, this, [this] { startSketch(CadViewport::SketchTool::Rectangle); });
+    connect(circleSketchAction, &QAction::triggered, this, [this] { startSketch(CadViewport::SketchTool::Circle); });
+    connect(extrudeAction, &QAction::triggered, this, [this] { beginExtrudeForSelectedSketch(); });
     connect(fitAction, &QAction::triggered, viewport_, &CadViewport::fitAll);
     connect(gridAction, &QAction::toggled, viewport_, &CadViewport::setGridVisible);
     connect(isoAction, &QAction::triggered, this, [this] { viewport_->setStandardView(QStringLiteral("iso")); });
@@ -541,13 +697,22 @@ void MainWindow::createMenusAndToolbar()
 
 void MainWindow::connectActions()
 {
+    connect(viewport_, &CadViewport::sketchFinished, this, [this](const QString& type, const QVector2D& origin, const QVector2D& size) {
+        if (type.isEmpty()) {
+            statusBar()->showMessage(QStringLiteral("Эскиз отменён или слишком мал: увеличьте размер и повторите."), 3500);
+            return;
+        }
+        createSketch(type, origin, size);
+    });
     connect(viewport_, &CadViewport::selectionChanged, this, [this](int index) {
+        viewport_->setActiveReferencePlane(CadViewport::ReferencePlane::None);
         if (tree_) {
             const QSignalBlocker blocker(tree_);
             if (index >= 0 && static_cast<std::size_t>(index) < document_.objects.size()) {
-                for (int row = 0; row < tree_->topLevelItemCount(); ++row) {
+                for (int row = 1; row < tree_->topLevelItemCount(); ++row) {
                     QTreeWidgetItem* item = tree_->topLevelItem(row);
-                    if (item->data(0, Qt::UserRole).toInt() == index) {
+                    if (item->data(0, kTreeNodeTypeRole).toInt() == static_cast<int>(TreeNodeType::Object) &&
+                        item->data(0, Qt::UserRole).toInt() == index) {
                         tree_->setCurrentItem(item);
                         break;
                     }
@@ -586,15 +751,52 @@ void MainWindow::updateTree()
         return;
     const QSignalBlocker blocker(tree_);
     tree_->clear();
+
+    auto* origin = new QTreeWidgetItem(tree_);
+    origin->setText(0, QStringLiteral("Начало координат"));
+    origin->setData(0, Qt::UserRole, -1);
+    origin->setData(0, kTreeNodeTypeRole, static_cast<int>(TreeNodeType::Origin));
+    origin->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+    const auto addReferencePlane = [origin](const QString& name, CadViewport::ReferencePlane plane) {
+        auto* item = new QTreeWidgetItem(origin);
+        item->setText(0, name);
+        item->setData(0, Qt::UserRole, -1);
+        item->setData(0, kTreeNodeTypeRole, static_cast<int>(TreeNodeType::ReferencePlane));
+        item->setData(0, kReferencePlaneRole, static_cast<int>(plane));
+        item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+    };
+    addReferencePlane(QStringLiteral("Плоскость XY"), CadViewport::ReferencePlane::XY);
+    addReferencePlane(QStringLiteral("Плоскость YZ"), CadViewport::ReferencePlane::YZ);
+    addReferencePlane(QStringLiteral("Плоскость ZX"), CadViewport::ReferencePlane::ZX);
+    origin->setExpanded(true);
+
     for (std::size_t i = 0; i < document_.objects.size(); ++i) {
         const CadObject& object = document_.objects[i];
         auto* item = new QTreeWidgetItem(tree_);
         item->setText(0, object.name);
         item->setData(0, Qt::UserRole, static_cast<int>(i));
+        item->setData(0, kTreeNodeTypeRole, static_cast<int>(TreeNodeType::Object));
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsSelectable | Qt::ItemIsEnabled);
         item->setCheckState(0, object.visible ? Qt::Checked : Qt::Unchecked);
-        if (static_cast<int>(i) == selectedIndex())
-            tree_->setCurrentItem(item);
+    }
+
+    if (viewport_->activeReferencePlane() != CadViewport::ReferencePlane::None) {
+        for (int row = 0; row < origin->childCount(); ++row) {
+            QTreeWidgetItem* item = origin->child(row);
+            if (item->data(0, kReferencePlaneRole).toInt() ==
+                static_cast<int>(viewport_->activeReferencePlane())) {
+                tree_->setCurrentItem(item);
+                break;
+            }
+        }
+    } else if (selectedIndex() >= 0) {
+        for (int row = 1; row < tree_->topLevelItemCount(); ++row) {
+            QTreeWidgetItem* item = tree_->topLevelItem(row);
+            if (item->data(0, Qt::UserRole).toInt() == selectedIndex()) {
+                tree_->setCurrentItem(item);
+                break;
+            }
+        }
     }
     updateStatus();
 }
@@ -612,6 +814,7 @@ void MainWindow::updateInspector(bool updateMeasurements)
         const QSignalBlocker blocker(projectName_);
         projectName_->setText(document_.name);
     }
+    updateVariablesTable();
 
     const int index = selectedIndex();
     const bool hasObject = index >= 0 && static_cast<std::size_t>(index) < document_.objects.size();
@@ -621,9 +824,14 @@ void MainWindow::updateInspector(bool updateMeasurements)
     for (QDoubleSpinBox* field : positionFields_) field->setEnabled(hasObject);
     for (QDoubleSpinBox* field : rotationFields_) field->setEnabled(hasObject);
     for (QDoubleSpinBox* field : scaleFields_) field->setEnabled(hasObject);
+    for (QLineEdit* field : primitiveFields_) field->setEnabled(hasObject);
 
     if (hasObject) {
         const CadObject& object = document_.objects[static_cast<std::size_t>(index)];
+        const bool transformable = object.featureType != QStringLiteral("sketch");
+        for (QDoubleSpinBox* field : positionFields_) field->setEnabled(transformable);
+        for (QDoubleSpinBox* field : rotationFields_) field->setEnabled(transformable);
+        for (QDoubleSpinBox* field : scaleFields_) field->setEnabled(transformable);
         objectName_->setText(object.name);
         const double factor = unitFactor();
         const float position[]{object.position.x(), object.position.y(), object.position.z()};
@@ -643,25 +851,37 @@ void MainWindow::updateInspector(bool updateMeasurements)
         }
 
         const QStringList parameterNames = primitiveParameterNames(object.primitiveType);
-        const bool isParametric = !parameterNames.isEmpty() &&
+        const bool isExtrude = object.featureType == QStringLiteral("extrude");
+        const bool isSketch = object.featureType == QStringLiteral("sketch");
+        const bool isParametric = !isExtrude && !parameterNames.isEmpty() &&
                                   parameterNames.size() == static_cast<int>(object.primitiveParameters.size());
         primitiveGroup_->setVisible(isParametric);
+        editExtrudeButton_->setVisible(isExtrude && pendingExtrudeTargetId_.isEmpty());
+        editExtrudeButton_->setEnabled(isExtrude && !object.suppressed);
+        sketchConstraintsLabel_->setVisible(isSketch);
+        if (isSketch) {
+            sketchConstraintsLabel_->setText(object.primitiveType == QStringLiteral("sketch-circle")
+                ? QStringLiteral("Базовые ограничения: центр и радиус заданы; окружность замкнута. Привязка к сетке 5 мм и началу координат. Полноценный solver ограничений — следующий этап.")
+                : QStringLiteral("Базовые ограничения: стороны горизонтальны/вертикальны, контур замкнут, начало и размеры параметрические. Привязка к сетке 5 мм и началу координат. Полноценный solver ограничений — следующий этап."));
+        } else {
+            sketchConstraintsLabel_->clear();
+        }
         for (int i = 0; i < 3; ++i) {
             const std::size_t parameterIndex = static_cast<std::size_t>(i);
             const bool visible = isParametric && i < parameterNames.size();
             primitiveLabels_[parameterIndex]->setVisible(visible);
             primitiveFields_[parameterIndex]->setVisible(visible);
-            primitiveFields_[parameterIndex]->setEnabled(visible);
+            primitiveFields_[parameterIndex]->setEnabled(visible && !object.suppressed);
             const QSignalBlocker parameterBlock(primitiveFields_[parameterIndex]);
             if (visible) {
                 primitiveLabels_[parameterIndex]->setText(parameterNames[i]);
-                const double minimum = object.primitiveType == QStringLiteral("cone") && i == 1 ? 0.0 : 0.001;
-                primitiveFields_[parameterIndex]->setRange(minimum, 10000000.0);
-                primitiveFields_[parameterIndex]->setValue(object.primitiveParameters[parameterIndex] * factor);
-                primitiveFields_[parameterIndex]->setSuffix(QStringLiteral(" %1").arg(document_.units));
+                const QString key = QStringLiteral("p%1").arg(i);
+                const QString expression = object.parameterExpressions.value(key).trimmed();
+                primitiveFields_[parameterIndex]->setText(expression.isEmpty()
+                    ? QString::number(object.primitiveParameters[parameterIndex], 'g', 12)
+                    : expression);
             } else {
-                primitiveFields_[parameterIndex]->setValue(0.0);
-                primitiveFields_[parameterIndex]->setSuffix(QString());
+                primitiveFields_[parameterIndex]->clear();
             }
         }
         {
@@ -679,6 +899,8 @@ void MainWindow::updateInspector(bool updateMeasurements)
     } else {
         objectName_->clear();
         primitiveGroup_->setVisible(false);
+        editExtrudeButton_->setVisible(false);
+        sketchConstraintsLabel_->setVisible(false);
         colorButton_->setText(QStringLiteral("Цвет поверхности"));
         colorButton_->setStyleSheet(QString());
         {
@@ -690,8 +912,7 @@ void MainWindow::updateInspector(bool updateMeasurements)
             primitiveLabels_[parameterIndex]->hide();
             primitiveFields_[parameterIndex]->setEnabled(false);
             const QSignalBlocker parameterBlock(primitiveFields_[parameterIndex]);
-            primitiveFields_[parameterIndex]->setValue(0.0);
-            primitiveFields_[parameterIndex]->setSuffix(QString());
+            primitiveFields_[parameterIndex]->clear();
         }
         for (QDoubleSpinBox* field : positionFields_) field->setValue(0.0);
         for (QDoubleSpinBox* field : rotationFields_) field->setValue(0.0);
@@ -826,6 +1047,8 @@ void MainWindow::restoreHistory(int index)
 {
     if (index < 0 || index >= static_cast<int>(history_.size()) || index == historyIndex_)
         return;
+    if (!pendingExtrudeSketchId_.isEmpty())
+        cancelExtrude();
     historyIndex_ = index;
     document_ = history_[static_cast<std::size_t>(historyIndex_)];
     viewport_->setDocument(&document_);
@@ -888,6 +1111,8 @@ QString MainWindow::uniqueName(const QString& base) const
 void MainWindow::addPrimitive(const QString& kind)
 {
     CadObject object;
+    object.id = cadNewId();
+    object.featureType = QStringLiteral("primitive");
     object.primitiveType = kind;
     if (kind == QStringLiteral("box")) {
         object.setPrimitiveParameters({40.0, 30.0, 24.0});
@@ -929,38 +1154,378 @@ void MainWindow::editPrimitiveParameters()
     const int index = selectedIndex();
     if (index < 0 || static_cast<std::size_t>(index) >= document_.objects.size())
         return;
-    CadObject& object = document_.objects[static_cast<std::size_t>(index)];
-    const int parameterCount = primitiveParameterCount(object.primitiveType);
-    if (parameterCount <= 0 || parameterCount != static_cast<int>(object.primitiveParameters.size()))
+    const CadObject& selected = document_.objects[static_cast<std::size_t>(index)];
+    if (selected.featureType != QStringLiteral("primitive") && selected.featureType != QStringLiteral("sketch"))
         return;
-
-    std::vector<double> parameters;
-    parameters.reserve(static_cast<std::size_t>(parameterCount));
-    bool changed = false;
-    const double factor = unitFactor();
-    for (int i = 0; i < parameterCount; ++i) {
-        const double valueMm = primitiveFields_[static_cast<std::size_t>(i)]->value() / factor;
-        parameters.push_back(valueMm);
-        if (std::abs(valueMm - object.primitiveParameters[static_cast<std::size_t>(i)]) > 1.0e-8)
-            changed = true;
-    }
-    if (!changed)
+    const int parameterCount = primitiveParameterCount(selected.primitiveType);
+    if (parameterCount <= 0 || parameterCount != static_cast<int>(selected.primitiveParameters.size()))
         return;
 
     try {
-        object.setPrimitiveParameters(parameters);
+        CadDocument candidate = document_;
+        CadObject& object = candidate.objects[static_cast<std::size_t>(index)];
+        const ExpressionParser::Values variableValues = ExpressionParser::evaluateVariables(candidate.variables);
+        object.parameterExpressions.clear();
+        object.primitiveParameters.clear();
+        for (int i = 0; i < parameterCount; ++i) {
+            const QString expression = primitiveFields_[static_cast<std::size_t>(i)]->text().trimmed();
+            if (expression.isEmpty())
+                throw ExpressionError(QStringLiteral("Параметр не может быть пустым."));
+            const double value = ExpressionParser::evaluate(expression, variableValues);
+            object.parameterExpressions.insert(QStringLiteral("p%1").arg(i), expression);
+            object.primitiveParameters.push_back(value);
+        }
+        CadIO::recomputeParametricFeatures(candidate);
+        document_ = std::move(candidate);
+        for (QLineEdit* field : primitiveFields_)
+            field->setStyleSheet(QString());
+        refreshViewport();
+        if (!pendingExtrudeSketchId_.isEmpty())
+            updateExtrudePreview();
+        pushHistory();
+        statusBar()->showMessage(QStringLiteral("Формулы параметров пересчитаны"), 2500);
+    } catch (const Standard_Failure& error) {
+        for (QLineEdit* field : primitiveFields_)
+            field->setStyleSheet(QStringLiteral("border:1px solid #d86464;"));
+        statusBar()->showMessage(QString::fromLocal8Bit(error.GetMessageString()), 5000);
+    } catch (const std::exception& error) {
+        for (QLineEdit* field : primitiveFields_)
+            field->setStyleSheet(QStringLiteral("border:1px solid #d86464;"));
+        statusBar()->showMessage(QString::fromUtf8(error.what()), 5000);
+    }
+}
+
+void MainWindow::startSketch(CadViewport::SketchTool tool)
+{
+    if (!pendingExtrudeSketchId_.isEmpty())
+        cancelExtrude();
+    const CadViewport::ReferencePlane plane = viewport_->activeReferencePlane();
+    if (plane == CadViewport::ReferencePlane::None) {
+        statusBar()->showMessage(QStringLiteral("Сначала выберите XY, YZ или ZX в дереве проекта."), 4500);
+        return;
+    }
+    viewport_->beginSketch(tool, plane);
+    statusBar()->showMessage(QStringLiteral("Эскиз: нажмите и перетащите мышь; координаты привязываются к сетке 5 мм. Esc — отмена."), 6000);
+}
+
+void MainWindow::createSketch(const QString& profileType, const QVector2D& origin, const QVector2D& size)
+{
+    const CadViewport::ReferencePlane activePlane = viewport_->activeReferencePlane();
+    if (activePlane == CadViewport::ReferencePlane::None) {
+        statusBar()->showMessage(QStringLiteral("Создание эскиза отменено: базовая плоскость не выбрана."), 4000);
+        return;
+    }
+
+    CadObject sketch;
+    sketch.id = cadNewId();
+    sketch.name = uniqueName(QStringLiteral("Эскиз"));
+    sketch.featureType = QStringLiteral("sketch");
+    sketch.primitiveType = profileType;
+    sketch.sketchPlane = activePlane == CadViewport::ReferencePlane::XY ? QStringLiteral("XY")
+        : activePlane == CadViewport::ReferencePlane::YZ ? QStringLiteral("YZ")
+        : QStringLiteral("ZX");
+    sketch.sketchOrigin = origin;
+    sketch.color = QColor(105, 206, 184);
+    if (profileType == QStringLiteral("sketch-rectangle")) {
+        sketch.sketchConstraints = {QStringLiteral("horizontal"), QStringLiteral("vertical"),
+                                    QStringLiteral("coincident-closed"), QStringLiteral("grid-snap-5mm")};
+        sketch.primitiveParameters = {size.x(), size.y()};
+        sketch.parameterExpressions.insert(QStringLiteral("p0"), QString::number(size.x(), 'g', 12));
+        sketch.parameterExpressions.insert(QStringLiteral("p1"), QString::number(size.y(), 'g', 12));
+    } else if (profileType == QStringLiteral("sketch-circle")) {
+        sketch.sketchConstraints = {QStringLiteral("center-fixed"), QStringLiteral("radius-dimension"),
+                                    QStringLiteral("grid-snap-5mm")};
+        sketch.primitiveParameters = {size.x()};
+        sketch.parameterExpressions.insert(QStringLiteral("p0"), QString::number(size.x(), 'g', 12));
+    } else {
+        statusBar()->showMessage(QStringLiteral("Этот профиль эскиза не поддерживается."), 4000);
+        return;
+    }
+
+    try {
+        CadDocument candidate = document_;
+        candidate.objects.push_back(std::move(sketch));
+        CadIO::recomputeParametricFeatures(candidate);
+        document_ = std::move(candidate);
+        const int index = static_cast<int>(document_.objects.size()) - 1;
         viewport_->refreshGeometry();
+        viewport_->setSelectedObject(index);
         updateTree();
         updateInspector();
         pushHistory();
-        statusBar()->showMessage(QStringLiteral("Параметры примитива обновлены"), 2500);
-    } catch (const CadError& error) {
-        QMessageBox::warning(this, QStringLiteral("Недопустимые размеры"), QString::fromUtf8(error.what()));
-        updateInspector();
+        viewport_->fitAll();
+        statusBar()->showMessage(QStringLiteral("Эскиз создан. Размеры редактируются формулами в панели свойств."), 4500);
     } catch (const Standard_Failure& error) {
-        QMessageBox::warning(this, QStringLiteral("Ошибка построения"), QString::fromLocal8Bit(error.GetMessageString()));
-        updateInspector();
+        statusBar()->showMessage(QString::fromLocal8Bit(error.GetMessageString()), 5000);
+    } catch (const std::exception& error) {
+        statusBar()->showMessage(QString::fromUtf8(error.what()), 5000);
     }
+}
+
+void MainWindow::beginExtrudeForSelectedSketch()
+{
+    const int index = selectedIndex();
+    if (index < 0 || static_cast<std::size_t>(index) >= document_.objects.size() ||
+        document_.objects[static_cast<std::size_t>(index)].featureType != QStringLiteral("sketch")) {
+        statusBar()->showMessage(QStringLiteral("Выберите замкнутый эскиз в дереве или viewport."), 4500);
+        return;
+    }
+    beginExtrude(document_.objects[static_cast<std::size_t>(index)].id);
+}
+
+void MainWindow::beginExtrudeEditForSelectedFeature()
+{
+    const int index = selectedIndex();
+    if (index < 0 || static_cast<std::size_t>(index) >= document_.objects.size())
+        return;
+    const CadObject& feature = document_.objects[static_cast<std::size_t>(index)];
+    if (feature.featureType != QStringLiteral("extrude") || feature.inputs.size() != 1) {
+        statusBar()->showMessage(QStringLiteral("Выберите фичу выдавливания для редактирования."), 3500);
+        return;
+    }
+    beginExtrude(feature.inputs.front(), feature.id);
+}
+
+void MainWindow::beginExtrude(const QString& sketchId, const QString& targetId)
+{
+    if (!pendingExtrudeSketchId_.isEmpty())
+        cancelExtrude();
+    const auto sketchIt = std::find_if(document_.objects.cbegin(), document_.objects.cend(), [&sketchId](const CadObject& object) {
+        return object.id == sketchId && object.featureType == QStringLiteral("sketch");
+    });
+    if (sketchIt == document_.objects.cend()) {
+        statusBar()->showMessage(QStringLiteral("Исходный эскиз не найден."), 4500);
+        return;
+    }
+
+    pendingExtrudeSketchId_ = sketchId;
+    pendingExtrudeTargetId_ = targetId;
+    QString initialExpression = QStringLiteral("20");
+    bool symmetric = false;
+    if (!targetId.isEmpty()) {
+        const auto targetIt = std::find_if(document_.objects.cbegin(), document_.objects.cend(), [&targetId](const CadObject& object) {
+            return object.id == targetId;
+        });
+        if (targetIt != document_.objects.cend()) {
+            initialExpression = targetIt->parameterExpressions.value(QStringLiteral("p0"),
+                targetIt->primitiveParameters.empty() ? QStringLiteral("20")
+                    : QString::number(targetIt->primitiveParameters.front(), 'g', 12));
+            symmetric = targetIt->symmetricExtrude;
+        }
+    }
+    viewport_->setTemporarilyHiddenObject(-1);
+    {
+        const QSignalBlocker lengthBlock(extrudeLengthField_);
+        const QSignalBlocker symmetricBlock(symmetricExtrudeCheck_);
+        extrudeLengthField_->setText(initialExpression);
+        symmetricExtrudeCheck_->setChecked(symmetric);
+    }
+    extrudeGroup_->setVisible(true);
+    editExtrudeButton_->setVisible(false);
+    updateExtrudePreview();
+    extrudeLengthField_->setFocus();
+    extrudeLengthField_->selectAll();
+}
+
+void MainWindow::updateExtrudePreview()
+{
+    if (pendingExtrudeSketchId_.isEmpty() || !extrudeLengthField_)
+        return;
+    hasValidExtrudePreview_ = false;
+    extrudeCommitButton_->setEnabled(false);
+    try {
+        const auto sketchIt = std::find_if(document_.objects.cbegin(), document_.objects.cend(), [this](const CadObject& object) {
+            return object.id == pendingExtrudeSketchId_ && object.featureType == QStringLiteral("sketch");
+        });
+        if (sketchIt == document_.objects.cend())
+            throw CadError(QStringLiteral("Исходный эскиз не найден."));
+        const ExpressionParser::Values variableValues = ExpressionParser::evaluateVariables(document_.variables);
+        const QString expression = extrudeLengthField_->text().trimmed();
+        const double length = ExpressionParser::evaluate(expression, variableValues);
+        TopoDS_Shape preview = CadIO::makeExtrusion(*sketchIt, length, symmetricExtrudeCheck_->isChecked());
+        int hiddenTargetIndex = -1;
+        if (!pendingExtrudeTargetId_.isEmpty()) {
+            for (std::size_t i = 0; i < document_.objects.size(); ++i) {
+                if (document_.objects[i].id != pendingExtrudeTargetId_)
+                    continue;
+                hiddenTargetIndex = static_cast<int>(i);
+                CadObject transformedPreview = document_.objects[i];
+                transformedPreview.shape = preview;
+                preview = transformedPreview.worldShape();
+                break;
+            }
+        }
+        viewport_->setTemporarilyHiddenObject(hiddenTargetIndex);
+        viewport_->setPreviewShape(preview);
+        hasValidExtrudePreview_ = true;
+        extrudeCommitButton_->setEnabled(true);
+        extrudeStatusLabel_->setStyleSheet(QStringLiteral("color:#81e3c8;font-size:8pt;"));
+        extrudeStatusLabel_->setText(QStringLiteral("Предпросмотр обновлён · %1 мм. Подтвердите фичу или отмените.").arg(length, 0, 'g', 8));
+    } catch (const Standard_Failure& error) {
+        viewport_->setTemporarilyHiddenObject(-1);
+        viewport_->clearPreviewShape();
+        extrudeStatusLabel_->setStyleSheet(QStringLiteral("color:#f08a83;font-size:8pt;"));
+        extrudeStatusLabel_->setText(QString::fromLocal8Bit(error.GetMessageString()));
+    } catch (const std::exception& error) {
+        viewport_->setTemporarilyHiddenObject(-1);
+        viewport_->clearPreviewShape();
+        extrudeStatusLabel_->setStyleSheet(QStringLiteral("color:#f08a83;font-size:8pt;"));
+        extrudeStatusLabel_->setText(QString::fromUtf8(error.what()));
+    }
+}
+
+void MainWindow::confirmExtrude()
+{
+    if (!hasValidExtrudePreview_ || pendingExtrudeSketchId_.isEmpty())
+        return;
+    try {
+        CadDocument candidate = document_;
+        const auto sketchIt = std::find_if(candidate.objects.cbegin(), candidate.objects.cend(), [this](const CadObject& object) {
+            return object.id == pendingExtrudeSketchId_ && object.featureType == QStringLiteral("sketch");
+        });
+        if (sketchIt == candidate.objects.cend())
+            throw CadError(QStringLiteral("Исходный эскиз не найден."));
+        const QString expression = extrudeLengthField_->text().trimmed();
+        const ExpressionParser::Values variableValues = ExpressionParser::evaluateVariables(candidate.variables);
+        const double length = ExpressionParser::evaluate(expression, variableValues);
+
+        int targetIndex = -1;
+        if (!pendingExtrudeTargetId_.isEmpty()) {
+            for (std::size_t i = 0; i < candidate.objects.size(); ++i) {
+                if (candidate.objects[i].id == pendingExtrudeTargetId_) {
+                    targetIndex = static_cast<int>(i);
+                    break;
+                }
+            }
+        }
+        if (targetIndex < 0) {
+            CadObject feature;
+            feature.id = cadNewId();
+            feature.name = uniqueName(QStringLiteral("Выдавливание"));
+            feature.featureType = QStringLiteral("extrude");
+            feature.primitiveType = QStringLiteral("extrude");
+            feature.inputs = {pendingExtrudeSketchId_};
+            feature.primitiveParameters = {length};
+            feature.parameterExpressions.insert(QStringLiteral("p0"), expression);
+            feature.sketchPlane = sketchIt->sketchPlane;
+            feature.symmetricExtrude = symmetricExtrudeCheck_->isChecked();
+            feature.color = QColor(103, 164, 166);
+            candidate.objects.push_back(std::move(feature));
+            targetIndex = static_cast<int>(candidate.objects.size()) - 1;
+        } else {
+            CadObject& feature = candidate.objects[static_cast<std::size_t>(targetIndex)];
+            feature.featureType = QStringLiteral("extrude");
+            feature.primitiveType = QStringLiteral("extrude");
+            feature.inputs = {pendingExtrudeSketchId_};
+            feature.primitiveParameters = {length};
+            feature.parameterExpressions.insert(QStringLiteral("p0"), expression);
+            feature.sketchPlane = sketchIt->sketchPlane;
+            feature.symmetricExtrude = symmetricExtrudeCheck_->isChecked();
+        }
+
+        const QString committedId = candidate.objects[static_cast<std::size_t>(targetIndex)].id;
+        CadIO::recomputeParametricFeatures(candidate);
+        document_ = std::move(candidate);
+        pendingExtrudeSketchId_.clear();
+        pendingExtrudeTargetId_.clear();
+        hasValidExtrudePreview_ = false;
+        extrudeGroup_->setVisible(false);
+        viewport_->setTemporarilyHiddenObject(-1);
+        viewport_->clearPreviewShape();
+        viewport_->refreshGeometry();
+        int selected = -1;
+        for (std::size_t i = 0; i < document_.objects.size(); ++i) {
+            if (document_.objects[i].id == committedId) {
+                selected = static_cast<int>(i);
+                break;
+            }
+        }
+        viewport_->setSelectedObject(selected);
+        updateTree();
+        updateInspector();
+        pushHistory();
+        viewport_->fitAll();
+        statusBar()->showMessage(QStringLiteral("Выдавливание добавлено в дерево построения."), 4000);
+    } catch (const Standard_Failure& error) {
+        statusBar()->showMessage(QString::fromLocal8Bit(error.GetMessageString()), 5000);
+    } catch (const std::exception& error) {
+        statusBar()->showMessage(QString::fromUtf8(error.what()), 5000);
+    }
+}
+
+void MainWindow::cancelExtrude()
+{
+    pendingExtrudeSketchId_.clear();
+    pendingExtrudeTargetId_.clear();
+    hasValidExtrudePreview_ = false;
+    extrudeGroup_->setVisible(false);
+    viewport_->setTemporarilyHiddenObject(-1);
+    viewport_->clearPreviewShape();
+    updateInspector();
+    statusBar()->showMessage(QStringLiteral("Предпросмотр отменён; документ не изменён."), 3000);
+}
+
+void MainWindow::applyVariablesFromTable()
+{
+    if (populatingVariables_ || !variablesTable_)
+        return;
+    ExpressionParser::Definitions definitions;
+    const QRegularExpression identifier(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
+    const QSet<QString> reserved{
+        QStringLiteral("pi"), QStringLiteral("sin"), QStringLiteral("cos"), QStringLiteral("sqrt"),
+        QStringLiteral("min"), QStringLiteral("max")
+    };
+    for (int row = 0; row < variablesTable_->rowCount(); ++row) {
+        const QString name = variablesTable_->item(row, 0) ? variablesTable_->item(row, 0)->text().trimmed() : QString();
+        const QString expression = variablesTable_->item(row, 1) ? variablesTable_->item(row, 1)->text().trimmed() : QString();
+        if (!identifier.match(name).hasMatch() || reserved.contains(name.toLower())) {
+            variablesErrorLabel_->setText(QStringLiteral("Имя переменной «%1» некорректно или зарезервировано.").arg(name));
+            return;
+        }
+        if (expression.isEmpty()) {
+            variablesErrorLabel_->setText(QStringLiteral("Формула переменной «%1» не может быть пустой.").arg(name));
+            return;
+        }
+        if (definitions.contains(name)) {
+            variablesErrorLabel_->setText(QStringLiteral("Переменная «%1» указана больше одного раза.").arg(name));
+            return;
+        }
+        definitions.insert(name, expression);
+    }
+
+    try {
+        (void)ExpressionParser::evaluateVariables(definitions);
+        CadDocument candidate = document_;
+        candidate.variables = definitions;
+        CadIO::recomputeParametricFeatures(candidate);
+        document_ = std::move(candidate);
+        variablesErrorLabel_->clear();
+        refreshViewport();
+        if (!pendingExtrudeSketchId_.isEmpty())
+            updateExtrudePreview();
+        pushHistory();
+    } catch (const Standard_Failure& error) {
+        variablesErrorLabel_->setText(QString::fromLocal8Bit(error.GetMessageString()));
+        statusBar()->showMessage(variablesErrorLabel_->text(), 5000);
+    } catch (const std::exception& error) {
+        variablesErrorLabel_->setText(QString::fromUtf8(error.what()));
+        statusBar()->showMessage(variablesErrorLabel_->text(), 5000);
+    }
+}
+
+void MainWindow::updateVariablesTable()
+{
+    if (!variablesTable_)
+        return;
+    populatingVariables_ = true;
+    const QSignalBlocker blocker(variablesTable_);
+    variablesTable_->setRowCount(document_.variables.size());
+    int row = 0;
+    for (auto it = document_.variables.cbegin(); it != document_.variables.cend(); ++it, ++row) {
+        variablesTable_->setItem(row, 0, new QTableWidgetItem(it.key()));
+        variablesTable_->setItem(row, 1, new QTableWidgetItem(it.value()));
+    }
+    populatingVariables_ = false;
 }
 
 void MainWindow::importFiles()
@@ -1002,6 +1567,8 @@ void MainWindow::openProject()
                                                       QStringLiteral("Проект AoSCAD (*.aoscad);;Все файлы (*.*)"));
     if (path.isEmpty() || !confirmSaveChanges())
         return;
+    if (!pendingExtrudeSketchId_.isEmpty())
+        cancelExtrude();
     try {
         document_ = CadIO::loadProject(path);
         projectPath_ = QFileInfo(path).absoluteFilePath();
@@ -1087,6 +1654,8 @@ void MainWindow::newProject()
 {
     if (!confirmSaveChanges())
         return;
+    if (!pendingExtrudeSketchId_.isEmpty())
+        cancelExtrude();
     document_ = CadDocument{};
     projectPath_.clear();
     history_.clear();
@@ -1103,6 +1672,15 @@ void MainWindow::deleteSelected()
     const int index = selectedIndex();
     if (index < 0 || static_cast<std::size_t>(index) >= document_.objects.size())
         return;
+    if (!pendingExtrudeSketchId_.isEmpty())
+        cancelExtrude();
+    const QString id = document_.objects[static_cast<std::size_t>(index)].id;
+    for (const CadObject& candidate : document_.objects) {
+        if (candidate.id != id && candidate.inputs.contains(id)) {
+            statusBar()->showMessage(QStringLiteral("Нельзя удалить фичу, пока на неё ссылаются: %1").arg(candidate.name), 5000);
+            return;
+        }
+    }
     document_.objects.erase(document_.objects.begin() + index);
     refreshViewport();
     pushHistory();
@@ -1114,6 +1692,7 @@ void MainWindow::duplicateSelected()
     if (index < 0 || static_cast<std::size_t>(index) >= document_.objects.size())
         return;
     CadObject copy = document_.objects[static_cast<std::size_t>(index)];
+    copy.id = cadNewId();
     copy.name = uniqueName(copy.name + QStringLiteral(" копия"));
     copy.position.setX(copy.position.x() + 25.0F);
     document_.objects.push_back(std::move(copy));
