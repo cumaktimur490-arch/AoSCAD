@@ -1,5 +1,7 @@
-﻿#define AppName "AoSCAD Studio"
-#define AppVersion "0.3.0"
+#define AppName "AoSCAD Studio"
+#ifndef AppVersion
+  #define AppVersion "0.4.0"
+#endif
 #define AppExe "aoscad-studio.exe"
 
 [Setup]
@@ -12,6 +14,7 @@ DefaultDirName={localappdata}\Programs\AoSCAD Studio
 DefaultGroupName=AoSCAD Studio
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+MinVersion=10.0.17763
 CloseApplications=yes
 RestartApplications=no
 ArchitecturesAllowed=x64

@@ -8,7 +8,7 @@
 #include <QSurfaceFormat>
 
 #ifndef AOSCAD_VERSION
-#define AOSCAD_VERSION "0.3.0"
+#define AOSCAD_VERSION "0.4.0"
 #endif
 
 namespace {

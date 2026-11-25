@@ -1,9 +1,11 @@
 #pragma once
 
 #include <QColor>
+#include <QMap>
 #include <QMatrix4x4>
 #include <QString>
 #include <QStringList>
+#include <QVector2D>
 #include <QVector3D>
 
 #include <TopoDS_Shape.hxx>
@@ -32,6 +34,7 @@ int primitiveParameterCount(const QString& primitiveType);
 QStringList primitiveParameterNames(const QString& primitiveType);
 
 struct CadObject {
+    QString id;
     QString name;
     TopoDS_Shape shape;
     QColor color{105, 151, 164};
@@ -39,8 +42,16 @@ struct CadObject {
     QVector3D rotation{0.0F, 0.0F, 0.0F};
     QVector3D scale{1.0F, 1.0F, 1.0F};
     bool visible{true};
+    bool suppressed{false};
+    QString featureType{QStringLiteral("imported-body")};
+    QStringList inputs;
     QString primitiveType;
     std::vector<double> primitiveParameters;
+    QMap<QString, QString> parameterExpressions;
+    QString sketchPlane{QStringLiteral("XY")};
+    QVector2D sketchOrigin{};
+    QStringList sketchConstraints;
+    bool symmetricExtrude{false};
     QString materialId{QStringLiteral("unassigned")};
 
     QMatrix4x4 transformMatrix() const;
@@ -51,8 +62,14 @@ struct CadObject {
 struct CadDocument {
     QString name{"Безымянный проект"};
     QString units{"мм"};
+    QMap<QString, QString> variables;
     std::vector<CadObject> objects;
 };
+
+QString cadNewId();
+QVector3D cadSketchPointToWorld(const QString& plane, const QVector2D& point);
+QVector2D cadSketchPointFromWorld(const QString& plane, const QVector3D& point);
+QVector3D cadSketchPlaneNormal(const QString& plane);
 
 struct CadTriangle {
     QVector3D a;
@@ -76,6 +93,8 @@ public:
                            const QString& filePath,
                            std::optional<std::size_t> objectIndex = std::nullopt);
     static CadGeometryProperties analyzeShape(const TopoDS_Shape& shape);
+    static TopoDS_Shape makeExtrusion(const CadObject& sketch, double lengthMm, bool symmetric = false);
+    static void recomputeParametricFeatures(CadDocument& document);
     static std::vector<CadTriangle> triangulate(const TopoDS_Shape& shape,
                                                  std::size_t objectIndex = 0,
                                                  double linearDeflection = 0.5);
