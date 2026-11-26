@@ -33,6 +33,7 @@ public:
     void setTool(Tool tool);
     Tool tool() const { return tool_; }
     void setGridVisible(bool visible);
+    void setDarkTheme(bool dark);
     void setActiveReferencePlane(ReferencePlane plane);
     ReferencePlane activeReferencePlane() const { return activeReferencePlane_; }
     void refreshGeometry();
@@ -106,6 +107,7 @@ private:
     QVector2D sketchStart_{};
     QVector2D sketchCurrent_{};
     bool gridVisible_{false};
+    bool darkTheme_{true};
     bool glReady_{false};
 
     float yawDegrees_{-45.0F};

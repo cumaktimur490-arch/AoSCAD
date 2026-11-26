@@ -158,6 +158,14 @@ void CadViewport::setGridVisible(bool visible)
     update();
 }
 
+void CadViewport::setDarkTheme(bool dark)
+{
+    if (darkTheme_ == dark)
+        return;
+    darkTheme_ = dark;
+    update();
+}
+
 void CadViewport::setActiveReferencePlane(ReferencePlane plane)
 {
     if (activeReferencePlane_ == plane)
@@ -271,7 +279,6 @@ void CadViewport::initializeGL()
     glEnable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
     glEnable(GL_MULTISAMPLE);
-    glClearColor(0.259F, 0.259F, 0.259F, 1.0F);
 
     const char* vertexShader = R"(
         #version 330 core
@@ -324,6 +331,11 @@ void CadViewport::paintGL()
 {
     const qreal ratio = devicePixelRatioF();
     glViewport(0, 0, qRound(width() * ratio), qRound(height() * ratio));
+    const QColor background = darkTheme_ ? QColor(QStringLiteral("#424242")) : QColor(QStringLiteral("#F3F5F7"));
+    const QColor selectionColor = darkTheme_ ? QColor(QStringLiteral("#22C9D0")) : QColor(QStringLiteral("#0078D7"));
+    const QColor selectionTextColor = darkTheme_ ? QColor(QStringLiteral("#C9F6F7")) : QColor(QStringLiteral("#005A9E"));
+    const QColor selectionFillColor = darkTheme_ ? QColor(34, 201, 208, 24) : QColor(0, 120, 215, 22);
+    glClearColor(background.redF(), background.greenF(), background.blueF(), background.alphaF());
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     if (!shader_.isLinked())
         return;
@@ -335,7 +347,8 @@ void CadViewport::paintGL()
 
     if (gridVisible_ && gridBuffer_.isCreated() && !gridVertices_.empty()) {
         gridBuffer_.bind();
-        shader_.setUniformValue("uColor", colorVector(QColor(QStringLiteral("#5A5A5A"))));
+        const QColor gridColor = darkTheme_ ? QColor(QStringLiteral("#5A5A5A")) : QColor(QStringLiteral("#D0D5DA"));
+        shader_.setUniformValue("uColor", colorVector(gridColor));
         shader_.setUniformValue("uLit", false);
         shader_.enableAttributeArray(0);
         shader_.enableAttributeArray(1);
@@ -358,7 +371,7 @@ void CadViewport::paintGL()
                 continue;
             QColor color = batch.color;
             if (batch.objectIndex == selectedObject_)
-                color = QColor(140, 184, 217);
+                color = darkTheme_ ? QColor(140, 184, 217) : QColor(0, 120, 215);
             shader_.setUniformValue("uColor", colorVector(color));
             glDrawArrays(GL_TRIANGLES, batch.firstVertex, batch.vertexCount);
         }
@@ -389,7 +402,7 @@ void CadViewport::paintGL()
         for (const LineBatch& batch : lineBatches_) {
             QColor color = batch.color;
             if (batch.objectIndex >= 0 && batch.objectIndex == selectedObject_)
-                color = QColor(QStringLiteral("#22C9D0"));
+                color = selectionColor;
             shader_.setUniformValue("uColor", colorVector(color));
             glDrawArrays(GL_LINES, batch.firstVertex, batch.vertexCount);
         }
@@ -453,11 +466,11 @@ void CadViewport::paintGL()
         if (plane.plane != activeReferencePlane_)
             continue;
 
-        painter.setPen(QPen(QColor(QStringLiteral("#22C9D0")), 2.0, Qt::SolidLine));
-        painter.setBrush(QColor(34, 201, 208, 24));
+        painter.setPen(QPen(selectionColor, 2.0, Qt::SolidLine));
+        painter.setBrush(selectionFillColor);
         painter.drawPolygon(polygon);
         const QPointF labelPosition = polygon.boundingRect().topLeft() + QPointF(5.0, 14.0);
-        painter.setPen(QColor(QStringLiteral("#C9F6F7")));
+        painter.setPen(selectionTextColor);
         painter.drawText(labelPosition, plane.label);
     }
 
@@ -490,10 +503,10 @@ void CadViewport::paintGL()
             dimensionText = QStringLiteral("R %1 мм").arg(radius, 0, 'g', 4);
         }
         if (profile.size() > 1) {
-            painter.setPen(QPen(QColor(QStringLiteral("#22C9D0")), 2.0, Qt::SolidLine));
-            painter.setBrush(QColor(34, 201, 208, 28));
+            painter.setPen(QPen(selectionColor, 2.0, Qt::SolidLine));
+            painter.setBrush(selectionFillColor);
             painter.drawPolygon(profile);
-            painter.setPen(QColor(QStringLiteral("#C9F6F7")));
+            painter.setPen(selectionTextColor);
             painter.drawText(profile.boundingRect().bottomRight() + QPointF(8.0, 16.0), dimensionText);
         }
     }

@@ -67,6 +67,8 @@ private:
     QLabel* coordinateLabel_{nullptr};
     QAction* undoAction_{nullptr};
     QAction* redoAction_{nullptr};
+    QAction* darkThemeAction_{nullptr};
+    QAction* lightThemeAction_{nullptr};
     std::vector<CadDocument> history_;
     int historyIndex_{-1};
     int savedHistoryIndex_{-1};
@@ -76,7 +78,10 @@ private:
     QString pendingExtrudeSketchId_;
     QString pendingExtrudeTargetId_;
     bool hasValidExtrudePreview_{false};
+    bool darkTheme_{true};
 
+    void applyTheme(bool dark);
+    void setExtrudeStatusLevel(const QString& level);
     void createInterface();
     void createMenusAndRibbon();
     void createProjectDock();
