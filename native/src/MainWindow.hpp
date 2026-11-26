@@ -21,6 +21,7 @@ class QGroupBox;
 class QTableWidget;
 class QCheckBox;
 class QCloseEvent;
+class QDockWidget;
 class QTabWidget;
 
 class MainWindow final : public QMainWindow {
@@ -33,6 +34,8 @@ protected:
 private:
     CadDocument document_;
     CadViewport* viewport_{nullptr};
+    QDockWidget* projectDock_{nullptr};
+    QDockWidget* inspectorDock_{nullptr};
     QTabWidget* ribbonTabs_{nullptr};
     QTreeWidget* tree_{nullptr};
     QLineEdit* projectName_{nullptr};

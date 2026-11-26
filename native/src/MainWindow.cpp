@@ -150,8 +150,8 @@ QIcon makeRibbonIcon(const QString& name)
     pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
-    painter.setPen(QPen(QColor(QStringLiteral("#405B70")), 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    painter.setBrush(QColor(QStringLiteral("#D9EAF6")));
+    painter.setPen(QPen(QColor(QStringLiteral("#CBD3D7")), 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.setBrush(QColor(QStringLiteral("#71858E")));
 
     const auto polygon = [&painter](std::initializer_list<QPointF> points, const QColor& fill) {
         QPolygonF shape;
@@ -252,7 +252,7 @@ QIcon makeRibbonIcon(const QString& name)
         painter.setBrush(Qt::NoBrush); painter.drawArc(QRectF(4, 16, 16, 5), 0, 180 * 16);
     } else if (name == QStringLiteral("torus")) {
         painter.drawEllipse(QRectF(3, 5, 18, 14));
-        painter.setBrush(QColor(QStringLiteral("#F0F6FA"))); painter.drawEllipse(QRectF(8, 9, 8, 6));
+        painter.setBrush(QColor(QStringLiteral("#2B2B2B"))); painter.drawEllipse(QRectF(8, 9, 8, 6));
     } else if (name == QStringLiteral("rectangle")) {
         painter.drawRect(QRectF(4, 5, 16, 14));
         painter.setBrush(Qt::NoBrush); painter.drawLine(4, 12, 20, 12); painter.drawLine(12, 5, 12, 19);
@@ -313,36 +313,36 @@ MainWindow::MainWindow(QWidget* parent)
 void MainWindow::createInterface()
 {
     setStyleSheet(QStringLiteral(R"(
-        QMainWindow, QWidget { background: #F0F0F0; color: #252525; font-family: "Segoe UI", sans-serif; font-size: 10pt; }
-        QMenuBar, QToolBar { background: #E6E6E6; border: 1px solid #C8C8C8; }
-        QMenuBar::item { padding: 5px 10px; }
-        QMenuBar::item:selected, QMenu::item:selected { background: #CCE4F7; color: #202020; border: 1px solid #0078D7; }
-        QMenu { background: #E6E6E6; border: 1px solid #C8C8C8; }
-        QMenu::item { padding: 7px 26px 7px 12px; }
-        QToolBar { spacing: 0; padding: 0; border-bottom: 1px solid #C8C8C8; }
-        QToolBar QToolButton { background: transparent; color: #252525; border: 1px solid transparent; padding: 4px; }
-        QToolBar QToolButton:hover { background: #F0F0F0; border-color: #C8C8C8; }
-        QToolBar QToolButton:checked { background: #CCE4F7; color: #202020; border-color: #0078D7; }
-        QTabWidget::pane { background: #F0F0F0; border: 1px solid #C8C8C8; }
-        QTabBar::tab { background: #E6E6E6; border: 1px solid #C8C8C8; padding: 6px 16px; margin-right: 1px; }
-        QTabBar::tab:selected { background: #F0F0F0; color: #202020; border-bottom-color: #F0F0F0; }
-        QToolButton#ribbonButton { background: #E6E6E6; color: #252525; border: 1px solid transparent; padding: 3px; }
-        QToolButton#ribbonButton:hover { background: #FFFFFF; border-color: #C8C8C8; }
-        QToolButton#ribbonButton:checked { background: #CCE4F7; border: 1px solid #0078D7; }
-        QDockWidget { border: 1px solid #C8C8C8; }
-        QDockWidget::title { background: #E6E6E6; padding: 8px 10px; border-bottom: 1px solid #C8C8C8; font-weight: 600; }
-        QLineEdit, QComboBox, QDoubleSpinBox, QTreeWidget, QTableWidget { background: #FFFFFF; color: #252525; border: 1px solid #C8C8C8; padding: 5px 7px; selection-background-color: #CCE4F7; selection-color: #202020; }
-        QTreeWidget, QTableWidget { background: #FFFFFF; alternate-background-color: #FFFFFF; padding: 3px; }
-        QTreeWidget::item, QTableWidget::item { padding: 5px; }
-        QTreeWidget::item:selected, QTableWidget::item:selected, QAbstractItemView::item:selected { background: #CCE4F7; color: #202020; border: 1px solid #0078D7; }
-        QPushButton { background: #E6E6E6; color: #252525; border: 1px solid #C8C8C8; padding: 7px 10px; }
-        QPushButton:hover { background: #FFFFFF; border-color: #0078D7; }
-        QPushButton#accentButton { background: #CCE4F7; color: #202020; border-color: #0078D7; font-weight: 700; }
-        QPushButton#accentButton:hover { background: #D9ECFA; }
-        QGroupBox { border: 1px solid #C8C8C8; margin-top: 11px; padding: 9px; font-weight: 600; }
-        QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 5px; color: #4F5B65; }
-        QLabel#axisLabel { color: #5F6B75; font-size: 9pt; }
-        QStatusBar { background: #F0F0F0; color: #5F6770; border-top: 1px solid #C8C8C8; }
+        QMainWindow, QWidget { background: #2B2B2B; color: #D2D2D2; font-family: "Segoe UI", sans-serif; font-size: 9pt; }
+        QMenuBar, QToolBar { background: #1D1D1D; color: #D6D6D6; border: 1px solid #171717; }
+        QMenuBar::item { padding: 4px 8px; }
+        QMenuBar::item:selected, QMenu::item:selected { background: #35565A; color: #FFFFFF; border: 1px solid #22C9D0; }
+        QMenu { background: #252525; color: #D6D6D6; border: 1px solid #484848; }
+        QMenu::item { padding: 6px 24px 6px 10px; }
+        QToolBar { spacing: 0; padding: 0; border-bottom: 1px solid #141414; }
+        QToolBar QToolButton { background: transparent; color: #D0D0D0; border: 1px solid transparent; padding: 3px; }
+        QToolBar QToolButton:hover { background: #393939; border-color: #575757; }
+        QToolBar QToolButton:checked { background: #24484B; color: #E4FFFF; border-color: #22C9D0; }
+        QTabWidget::pane { background: #303030; border: 1px solid #171717; }
+        QTabBar::tab { background: #252525; color: #BFC4C7; border: 1px solid #3B3B3B; padding: 5px 14px; margin-right: 1px; }
+        QTabBar::tab:selected { background: #373737; color: #FFFFFF; border-bottom-color: #373737; }
+        QToolButton#ribbonButton { background: #2B2B2B; color: #D4D7D9; border: 1px solid transparent; padding: 2px; }
+        QToolButton#ribbonButton:hover { background: #3B3B3B; border-color: #5B5B5B; }
+        QToolButton#ribbonButton:checked { background: #24484B; border: 1px solid #22C9D0; }
+        QDockWidget { border: 1px solid #181818; }
+        QDockWidget::title { background: #242424; color: #D2D2D2; padding: 6px 8px; border-bottom: 1px solid #3E3E3E; font-weight: 600; }
+        QLineEdit, QComboBox, QDoubleSpinBox, QTreeWidget, QTableWidget { background: #202020; color: #D7D7D7; border: 1px solid #474747; padding: 4px 6px; selection-background-color: #365E62; selection-color: #FFFFFF; }
+        QTreeWidget, QTableWidget { background: #252525; alternate-background-color: #2A2A2A; padding: 2px; }
+        QTreeWidget::item, QTableWidget::item { padding: 4px; }
+        QTreeWidget::item:selected, QTableWidget::item:selected, QAbstractItemView::item:selected { background: #365E62; color: #FFFFFF; border: 1px solid #22C9D0; }
+        QPushButton { background: #363636; color: #D9D9D9; border: 1px solid #505050; padding: 6px 9px; }
+        QPushButton:hover { background: #454545; border-color: #6B6B6B; }
+        QPushButton#accentButton { background: #245257; color: #F2FFFF; border-color: #22C9D0; font-weight: 700; }
+        QPushButton#accentButton:hover { background: #2B666B; }
+        QGroupBox { border: 1px solid #414141; margin-top: 10px; padding: 8px; font-weight: 600; }
+        QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 5px; color: #AEB7BB; }
+        QLabel#axisLabel { color: #AEB7BB; font-size: 8pt; }
+        QStatusBar { background: #1D1D1D; color: #B8B8B8; border-top: 1px solid #3C3C3C; }
     )"));
 
     viewport_ = new CadViewport(&document_, this);
@@ -359,15 +359,16 @@ void MainWindow::createInterface()
 
 void MainWindow::createProjectDock()
 {
-    auto* dock = new QDockWidget(QStringLiteral("Структура проекта"), this);
+    auto* dock = new QDockWidget(QStringLiteral("Дерево модели"), this);
+    projectDock_ = dock;
     dock->setObjectName(QStringLiteral("projectDock"));
-    dock->setMinimumWidth(225);
+    dock->setMinimumWidth(240);
     dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
 
     auto* panel = new QWidget(dock);
     auto* layout = new QVBoxLayout(panel);
-    layout->setContentsMargins(10, 10, 10, 10);
-    layout->setSpacing(8);
+    layout->setContentsMargins(7, 7, 7, 7);
+    layout->setSpacing(6);
 
     projectName_ = new QLineEdit(document_.name, panel);
     projectName_->setPlaceholderText(QStringLiteral("Название проекта"));
@@ -375,13 +376,15 @@ void MainWindow::createProjectDock()
     layout->addWidget(projectName_);
 
     auto* title = new QLabel(QStringLiteral("КОМПОНЕНТЫ"), panel);
-    title->setStyleSheet(QStringLiteral("color:#5B6570;font-size:8pt;font-weight:700;letter-spacing:1px;padding:3px 2px;"));
+    title->setStyleSheet(QStringLiteral("color:#AEB7BB;font-size:8pt;font-weight:700;letter-spacing:1px;padding:3px 2px;"));
     layout->addWidget(title);
 
     tree_ = new QTreeWidget(panel);
     tree_->setHeaderHidden(true);
-    tree_->setRootIsDecorated(false);
+    tree_->setRootIsDecorated(true);
     tree_->setUniformRowHeights(true);
+    tree_->setAlternatingRowColors(true);
+    tree_->setIndentation(14);
     tree_->setSelectionMode(QAbstractItemView::SingleSelection);
     layout->addWidget(tree_, 1);
 
@@ -435,6 +438,7 @@ void MainWindow::createProjectDock()
 void MainWindow::createInspectorDock()
 {
     auto* dock = new QDockWidget(QStringLiteral("Свойства"), this);
+    inspectorDock_ = dock;
     dock->setObjectName(QStringLiteral("inspectorDock"));
     dock->setMinimumWidth(250);
     dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
@@ -478,12 +482,12 @@ void MainWindow::createInspectorDock()
     variablesLayout->addWidget(variableButtons);
     variablesErrorLabel_ = new QLabel(variablesGroup);
     variablesErrorLabel_->setWordWrap(true);
-    variablesErrorLabel_->setStyleSheet(QStringLiteral("color:#B42318;font-size:8pt;"));
+    variablesErrorLabel_->setStyleSheet(QStringLiteral("color:#F08A83;font-size:8pt;"));
     variablesLayout->addWidget(variablesErrorLabel_);
     layout->addWidget(variablesGroup);
 
     auto* objectTitle = new QLabel(QStringLiteral("ОБЪЕКТ"), panel);
-    objectTitle->setStyleSheet(QStringLiteral("color:#5B6570;font-size:8pt;font-weight:700;letter-spacing:1px;margin-top:8px;"));
+    objectTitle->setStyleSheet(QStringLiteral("color:#AEB7BB;font-size:8pt;font-weight:700;letter-spacing:1px;margin-top:8px;"));
     layout->addWidget(objectTitle);
     objectName_ = new QLineEdit(panel);
     objectName_->setPlaceholderText(QStringLiteral("Выберите объект"));
@@ -521,7 +525,7 @@ void MainWindow::createInspectorDock()
 
     sketchConstraintsLabel_ = new QLabel(panel);
     sketchConstraintsLabel_->setWordWrap(true);
-    sketchConstraintsLabel_->setStyleSheet(QStringLiteral("color:#45545E;font-size:8pt;padding:6px;background:#FFFFFF;border:1px solid #C8C8C8;"));
+    sketchConstraintsLabel_->setStyleSheet(QStringLiteral("color:#C2C9CC;font-size:8pt;padding:6px;background:#222222;border:1px solid #484848;"));
     sketchConstraintsLabel_->setVisible(false);
     layout->addWidget(sketchConstraintsLabel_);
 
@@ -582,7 +586,7 @@ void MainWindow::createInspectorDock()
 
     auto* note = new QLabel(QStringLiteral("STEP / IGES сохраняют обменную CAD-геометрию. STL предназначен для Aeros Engine и 3D-печати."), panel);
     note->setWordWrap(true);
-    note->setStyleSheet(QStringLiteral("color:#5F6B75;font-size:8pt;padding:8px;background:#FFFFFF;border:1px solid #C8C8C8;"));
+    note->setStyleSheet(QStringLiteral("color:#B0B8BC;font-size:8pt;padding:8px;background:#222222;border:1px solid #484848;"));
     layout->addWidget(note);
 
     auto* scrollArea = new QScrollArea(dock);
@@ -591,6 +595,7 @@ void MainWindow::createInspectorDock()
     scrollArea->setWidget(panel);
     dock->setWidget(scrollArea);
     addDockWidget(Qt::RightDockWidgetArea, dock);
+    dock->hide();
 
     connect(objectName_, &QLineEdit::editingFinished, this, [this] {
         const int index = selectedIndex();
@@ -714,8 +719,16 @@ void MainWindow::createMenusAndRibbon()
 {
     auto* fileMenu = menuBar()->addMenu(QStringLiteral("Файл"));
     auto* editMenu = menuBar()->addMenu(QStringLiteral("Правка"));
+    auto* selectionMenu = menuBar()->addMenu(QStringLiteral("Выделить"));
     auto* viewMenu = menuBar()->addMenu(QStringLiteral("Вид"));
-    auto* insertMenu = menuBar()->addMenu(QStringLiteral("Создать"));
+    auto* sketchMenu = menuBar()->addMenu(QStringLiteral("Эскиз"));
+    auto* modelingMenu = menuBar()->addMenu(QStringLiteral("Моделирование"));
+    auto* appearanceMenu = menuBar()->addMenu(QStringLiteral("Оформление"));
+    auto* diagnosticsMenu = menuBar()->addMenu(QStringLiteral("Диагностика"));
+    auto* managementMenu = menuBar()->addMenu(QStringLiteral("Управление"));
+    auto* settingsMenu = menuBar()->addMenu(QStringLiteral("Настройка"));
+    auto* applicationsMenu = menuBar()->addMenu(QStringLiteral("Приложения"));
+    auto* windowMenu = menuBar()->addMenu(QStringLiteral("Окно"));
     auto* helpMenu = menuBar()->addMenu(QStringLiteral("Справка"));
 
     auto* toolBar = addToolBar(QStringLiteral("Лента команд"));
@@ -792,33 +805,45 @@ void MainWindow::createMenusAndRibbon()
     QAction* measureAction = addToolAction(QStringLiteral("Измерить"), QStringLiteral("measure"), QStringLiteral("Измерение"),
                                            QKeySequence(QStringLiteral("M")), CadViewport::Tool::Measure);
     selectAction->setChecked(true);
+    selectionMenu->addAction(selectAction);
+    managementMenu->addAction(moveAction);
+    managementMenu->addAction(rotateAction);
+    managementMenu->addAction(scaleAction);
+    diagnosticsMenu->addAction(measureAction);
     undoAction_->setEnabled(false);
     redoAction_->setEnabled(false);
 
-    QAction* boxAction = insertMenu->addAction(QStringLiteral("Бокс"));
-    QAction* cylinderAction = insertMenu->addAction(QStringLiteral("Цилиндр"));
-    QAction* sphereAction = insertMenu->addAction(QStringLiteral("Сфера"));
-    QAction* coneAction = insertMenu->addAction(QStringLiteral("Конус"));
-    QAction* torusAction = insertMenu->addAction(QStringLiteral("Тор"));
-    insertMenu->addSeparator();
-    QAction* rectangleSketchAction = insertMenu->addAction(QStringLiteral("Эскиз · прямоугольник"));
-    QAction* circleSketchAction = insertMenu->addAction(QStringLiteral("Эскиз · окружность"));
-    QAction* extrudeAction = insertMenu->addAction(QStringLiteral("Выдавливание…"));
+    QAction* boxAction = modelingMenu->addAction(QStringLiteral("Бокс"));
+    QAction* cylinderAction = modelingMenu->addAction(QStringLiteral("Цилиндр"));
+    QAction* sphereAction = modelingMenu->addAction(QStringLiteral("Сфера"));
+    QAction* coneAction = modelingMenu->addAction(QStringLiteral("Конус"));
+    QAction* torusAction = modelingMenu->addAction(QStringLiteral("Тор"));
+    QAction* rectangleSketchAction = sketchMenu->addAction(QStringLiteral("Прямоугольник"));
+    QAction* circleSketchAction = sketchMenu->addAction(QStringLiteral("Окружность"));
+    QAction* extrudeAction = modelingMenu->addAction(QStringLiteral("Выдавливание…"));
 
     QAction* fitAction = viewMenu->addAction(QStringLiteral("Вписать модель"));
     fitAction->setShortcut(QKeySequence(QStringLiteral("F")));
-    QAction* gridAction = viewMenu->addAction(QStringLiteral("Показать сетку"));
-    gridAction->setCheckable(true);
-    gridAction->setChecked(true);
-    viewMenu->addSeparator();
     QAction* isoAction = viewMenu->addAction(QStringLiteral("Изометрия"));
     QAction* topAction = viewMenu->addAction(QStringLiteral("Сверху"));
     QAction* frontAction = viewMenu->addAction(QStringLiteral("Спереди"));
     QAction* rightAction = viewMenu->addAction(QStringLiteral("Справа"));
+    QAction* gridAction = settingsMenu->addAction(QStringLiteral("Показать сетку"));
+    gridAction->setCheckable(true);
+    gridAction->setChecked(false);
 
-    QAction* updateAction = helpMenu->addAction(QStringLiteral("Проверить обновления…"));
-    helpMenu->addSeparator();
+    QAction* objectAppearanceAction = appearanceMenu->addAction(QStringLiteral("Цвет и материал объекта…"));
+    QAction* projectSettingsAction = settingsMenu->addAction(QStringLiteral("Параметры проекта…"));
+    QAction* projectDockAction = projectDock_->toggleViewAction();
+    projectDockAction->setText(QStringLiteral("Дерево модели"));
+    QAction* propertiesAction = inspectorDock_->toggleViewAction();
+    propertiesAction->setText(QStringLiteral("Панель свойств"));
+    windowMenu->addAction(projectDockAction);
+    windowMenu->addAction(propertiesAction);
+
+    QAction* updateAction = applicationsMenu->addAction(QStringLiteral("Проверить обновления…"));
     QAction* compatibilityAction = helpMenu->addAction(QStringLiteral("Форматы и совместимость CAD"));
+    helpMenu->addSeparator();
     QAction* aboutAction = helpMenu->addAction(QStringLiteral("О программе AoSCAD Studio"));
 
     const auto setRibbonIcon = [](QAction* action, const QString& iconName, const QString& ribbonText) {
@@ -851,8 +876,8 @@ void MainWindow::createMenusAndRibbon()
     const auto createRibbonPage = [this](const QString& title, QHBoxLayout*& pageLayout) {
         auto* page = new QWidget(ribbonTabs_);
         pageLayout = new QHBoxLayout(page);
-        pageLayout->setContentsMargins(8, 3, 8, 3);
-        pageLayout->setSpacing(8);
+        pageLayout->setContentsMargins(6, 2, 6, 2);
+        pageLayout->setSpacing(5);
         ribbonTabs_->addTab(page, title);
         return page;
     };
@@ -861,7 +886,7 @@ void MainWindow::createMenusAndRibbon()
         auto* group = new QWidget(page);
         auto* groupLayout = new QVBoxLayout(group);
         groupLayout->setContentsMargins(0, 0, 0, 0);
-        groupLayout->setSpacing(1);
+        groupLayout->setSpacing(0);
         auto* buttons = new QHBoxLayout;
         buttons->setContentsMargins(0, 0, 0, 0);
         buttons->setSpacing(2);
@@ -873,14 +898,14 @@ void MainWindow::createMenusAndRibbon()
                 button->setText(ribbonText);
             button->setObjectName(QStringLiteral("ribbonButton"));
             button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
-            button->setIconSize(QSize(24, 24));
-            button->setMinimumSize(72, 58);
-            button->setMaximumWidth(96);
+            button->setIconSize(QSize(21, 21));
+            button->setMinimumSize(66, 54);
+            button->setMaximumWidth(90);
             buttons->addWidget(button);
         }
         auto* caption = new QLabel(title, group);
         caption->setAlignment(Qt::AlignCenter);
-        caption->setStyleSheet(QStringLiteral("color:#66727C;font-size:8pt;"));
+        caption->setStyleSheet(QStringLiteral("color:#AAB2B6;font-size:8pt;"));
         groupLayout->addLayout(buttons, 1);
         groupLayout->addWidget(caption);
         pageLayout->addWidget(group);
@@ -889,34 +914,34 @@ void MainWindow::createMenusAndRibbon()
         auto* separator = new QFrame(page);
         separator->setFrameShape(QFrame::VLine);
         separator->setFrameShadow(QFrame::Plain);
-        separator->setStyleSheet(QStringLiteral("color:#C8C8C8;"));
+        separator->setStyleSheet(QStringLiteral("color:#4B4B4B;"));
         pageLayout->addWidget(separator);
     };
+
+    QHBoxLayout* modelLayout = nullptr;
+    QWidget* modelPage = createRibbonPage(QStringLiteral("Модель"), modelLayout);
+    addRibbonGroup(modelPage, modelLayout, QStringLiteral("Проект"), {newAction, openAction, importAction, saveAction});
+    addRibbonSeparator(modelPage, modelLayout);
+    addRibbonGroup(modelPage, modelLayout, QStringLiteral("История"), {undoAction_, redoAction_});
+    addRibbonSeparator(modelPage, modelLayout);
+    addRibbonGroup(modelPage, modelLayout, QStringLiteral("Тело"),
+                   {boxAction, cylinderAction, sphereAction, coneAction, torusAction});
+    addRibbonSeparator(modelPage, modelLayout);
+    addRibbonGroup(modelPage, modelLayout, QStringLiteral("Редактирование"), {duplicateAction, deleteAction});
+    modelLayout->addStretch(1);
 
     QHBoxLayout* sketchLayout = nullptr;
     QWidget* sketchPage = createRibbonPage(QStringLiteral("Эскиз"), sketchLayout);
     addRibbonGroup(sketchPage, sketchLayout, QStringLiteral("Профили"), {rectangleSketchAction, circleSketchAction});
     addRibbonSeparator(sketchPage, sketchLayout);
-    addRibbonGroup(sketchPage, sketchLayout, QStringLiteral("Объём"), {extrudeAction});
+    addRibbonGroup(sketchPage, sketchLayout, QStringLiteral("Выдавливание"), {extrudeAction});
     sketchLayout->addStretch(1);
 
-    QHBoxLayout* primitivesLayout = nullptr;
-    QWidget* primitivesPage = createRibbonPage(QStringLiteral("Примитивы"), primitivesLayout);
-    addRibbonGroup(primitivesPage, primitivesLayout, QStringLiteral("Создать тело"),
-                   {boxAction, cylinderAction, sphereAction, coneAction, torusAction});
-    primitivesLayout->addStretch(1);
-
-    QHBoxLayout* operationsLayout = nullptr;
-    QWidget* operationsPage = createRibbonPage(QStringLiteral("Операции"), operationsLayout);
-    addRibbonGroup(operationsPage, operationsLayout, QStringLiteral("Проект"), {newAction, openAction, importAction, saveAction});
-    addRibbonSeparator(operationsPage, operationsLayout);
-    addRibbonGroup(operationsPage, operationsLayout, QStringLiteral("История"), {undoAction_, redoAction_});
-    addRibbonSeparator(operationsPage, operationsLayout);
-    addRibbonGroup(operationsPage, operationsLayout, QStringLiteral("Редактирование"), {duplicateAction, deleteAction});
-    addRibbonSeparator(operationsPage, operationsLayout);
-    addRibbonGroup(operationsPage, operationsLayout, QStringLiteral("Инструменты"),
+    QHBoxLayout* transformLayout = nullptr;
+    QWidget* transformPage = createRibbonPage(QStringLiteral("Преобразования"), transformLayout);
+    addRibbonGroup(transformPage, transformLayout, QStringLiteral("Инструменты"),
                    {selectAction, moveAction, rotateAction, scaleAction, measureAction});
-    operationsLayout->addStretch(1);
+    transformLayout->addStretch(1);
 
     QHBoxLayout* viewLayout = nullptr;
     QWidget* viewPage = createRibbonPage(QStringLiteral("Вид"), viewLayout);
@@ -954,6 +979,12 @@ void MainWindow::createMenusAndRibbon()
     connect(topAction, &QAction::triggered, this, [this] { viewport_->setStandardView(QStringLiteral("top")); });
     connect(frontAction, &QAction::triggered, this, [this] { viewport_->setStandardView(QStringLiteral("front")); });
     connect(rightAction, &QAction::triggered, this, [this] { viewport_->setStandardView(QStringLiteral("right")); });
+    const auto showInspector = [this] {
+        inspectorDock_->show();
+        inspectorDock_->raise();
+    };
+    connect(objectAppearanceAction, &QAction::triggered, this, showInspector);
+    connect(projectSettingsAction, &QAction::triggered, this, showInspector);
     connect(updateAction, &QAction::triggered, this, [this] { launchUpdater(); });
     connect(compatibilityAction, &QAction::triggered, this, [this] { showCompatibilityHelp(); });
     connect(aboutAction, &QAction::triggered, this, [this] { showAbout(); });
@@ -1156,7 +1187,7 @@ void MainWindow::updateInspector(bool updateMeasurements)
             material_->setCurrentIndex(materialIndex);
         }
         colorButton_->setText(object.color.name(QColor::HexRgb).toUpper());
-        colorButton_->setStyleSheet(QStringLiteral("background:%1;color:%2;border:1px solid #C8C8C8;padding:8px;")
+        colorButton_->setStyleSheet(QStringLiteral("background:%1;color:%2;border:1px solid #505050;padding:8px;")
                                         .arg(object.color.name(), object.color.lightness() > 140 ? QStringLiteral("#252525") : QStringLiteral("white")));
         if (updateMeasurements)
             updatePhysicalInspector(object);
@@ -1623,17 +1654,17 @@ void MainWindow::updateExtrudePreview()
         viewport_->setPreviewShape(preview);
         hasValidExtrudePreview_ = true;
         extrudeCommitButton_->setEnabled(true);
-        extrudeStatusLabel_->setStyleSheet(QStringLiteral("color:#1E6B50;font-size:8pt;"));
+        extrudeStatusLabel_->setStyleSheet(QStringLiteral("color:#65D3A3;font-size:8pt;"));
         extrudeStatusLabel_->setText(QStringLiteral("Предпросмотр обновлён · %1 мм. Подтвердите фичу или отмените.").arg(length, 0, 'g', 8));
     } catch (const Standard_Failure& error) {
         viewport_->setTemporarilyHiddenObject(-1);
         viewport_->clearPreviewShape();
-        extrudeStatusLabel_->setStyleSheet(QStringLiteral("color:#B42318;font-size:8pt;"));
+        extrudeStatusLabel_->setStyleSheet(QStringLiteral("color:#F08A83;font-size:8pt;"));
         extrudeStatusLabel_->setText(QString::fromLocal8Bit(error.GetMessageString()));
     } catch (const std::exception& error) {
         viewport_->setTemporarilyHiddenObject(-1);
         viewport_->clearPreviewShape();
-        extrudeStatusLabel_->setStyleSheet(QStringLiteral("color:#B42318;font-size:8pt;"));
+        extrudeStatusLabel_->setStyleSheet(QStringLiteral("color:#F08A83;font-size:8pt;"));
         extrudeStatusLabel_->setText(QString::fromUtf8(error.what()));
     }
 }

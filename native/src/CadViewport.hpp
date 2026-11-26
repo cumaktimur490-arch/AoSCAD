@@ -90,7 +90,6 @@ private:
     QOpenGLBuffer vertexBuffer_{QOpenGLBuffer::VertexBuffer};
     QOpenGLBuffer lineBuffer_{QOpenGLBuffer::VertexBuffer};
     QOpenGLBuffer gridBuffer_{QOpenGLBuffer::VertexBuffer};
-    QOpenGLBuffer backgroundBuffer_{QOpenGLBuffer::VertexBuffer};
     std::vector<Vertex> vertices_;
     std::vector<Vertex> lineVertices_;
     std::vector<Vertex> gridVertices_;
@@ -106,8 +105,7 @@ private:
     bool sketchDrawing_{false};
     QVector2D sketchStart_{};
     QVector2D sketchCurrent_{};
-    QString currentViewName_{QStringLiteral("iso")};
-    bool gridVisible_{true};
+    bool gridVisible_{false};
     bool glReady_{false};
 
     float yawDegrees_{-45.0F};
