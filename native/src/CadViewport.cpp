@@ -65,29 +65,29 @@ struct ViewCubeFace {
     QString viewName;
     QString label;
     QPolygonF polygon;
-    QPointF labelPosition;
+    QColor fillColor;
 };
 
 std::array<ViewCubeFace, 3> makeViewCubeFaces(int width, int height)
 {
-    const QPointF center(std::max(58, width - 60), std::min(68, std::max(48, height - 48)));
+    const QPointF center(std::max(58, width - 72), std::min(76, std::max(64, height - 64)));
     const auto point = [&center](qreal x, qreal y) { return center + QPointF(x, y); };
     std::array<ViewCubeFace, 3> faces;
 
     faces[0].viewName = QStringLiteral("top");
     faces[0].label = QStringLiteral("ВЕРХ");
-    faces[0].polygon << point(0, -30) << point(27, -15) << point(0, 0) << point(-27, -15);
-    faces[0].labelPosition = point(-11, -15);
+    faces[0].polygon << point(0, -56) << point(56, -28) << point(0, 0) << point(-56, -28);
+    faces[0].fillColor = QColor(QStringLiteral("#FFFFFF"));
 
     faces[1].viewName = QStringLiteral("front");
     faces[1].label = QStringLiteral("ПЕРЕД");
-    faces[1].polygon << point(-27, -15) << point(0, 0) << point(0, 31) << point(-27, 16);
-    faces[1].labelPosition = point(-24, 10);
+    faces[1].polygon << point(-56, -28) << point(0, 0) << point(0, 56) << point(-56, 28);
+    faces[1].fillColor = QColor(QStringLiteral("#EEF3F7"));
 
     faces[2].viewName = QStringLiteral("right");
     faces[2].label = QStringLiteral("ПРАВО");
-    faces[2].polygon << point(0, 0) << point(27, -15) << point(27, 16) << point(0, 31);
-    faces[2].labelPosition = point(2, 10);
+    faces[2].polygon << point(0, 0) << point(56, -28) << point(56, 28) << point(0, 56);
+    faces[2].fillColor = QColor(QStringLiteral("#E5ECF2"));
     return faces;
 }
 
@@ -137,6 +137,7 @@ CadViewport::~CadViewport()
         vertexBuffer_.destroy();
         lineBuffer_.destroy();
         gridBuffer_.destroy();
+        backgroundBuffer_.destroy();
         doneCurrent();
     }
 }
@@ -305,26 +306,43 @@ void CadViewport::initializeGL()
     glEnable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
     glEnable(GL_MULTISAMPLE);
-    glClearColor(0.067F, 0.090F, 0.114F, 1.0F);
+    glClearColor(0.961F, 0.969F, 0.980F, 1.0F);
 
     const char* vertexShader = R"(
         #version 330 core
         in vec3 aPosition;
         in vec3 aNormal;
         uniform mat4 uViewProjection;
+        uniform bool uBackground;
         out vec3 vNormal;
+        out float vBackgroundFactor;
         void main() {
-            gl_Position = uViewProjection * vec4(aPosition, 1.0);
-            vNormal = aNormal;
+            if (uBackground) {
+                gl_Position = vec4(aPosition.xy, 0.0, 1.0);
+                vNormal = vec3(0.0, 0.0, 1.0);
+                vBackgroundFactor = (1.0 - aPosition.y) * 0.5;
+            } else {
+                gl_Position = uViewProjection * vec4(aPosition, 1.0);
+                vNormal = aNormal;
+                vBackgroundFactor = 0.0;
+            }
         }
     )";
     const char* fragmentShader = R"(
         #version 330 core
         in vec3 vNormal;
+        in float vBackgroundFactor;
         uniform vec4 uColor;
+        uniform vec4 uBackgroundTop;
+        uniform vec4 uBackgroundBottom;
         uniform bool uLit;
+        uniform bool uBackground;
         out vec4 fragColor;
         void main() {
+            if (uBackground) {
+                fragColor = mix(uBackgroundTop, uBackgroundBottom, clamp(vBackgroundFactor, 0.0, 1.0));
+                return;
+            }
             float light = 1.0;
             if (uLit) {
                 vec3 n = normalize(vNormal);
@@ -344,6 +362,18 @@ void CadViewport::initializeGL()
     vertexBuffer_.create();
     lineBuffer_.create();
     gridBuffer_.create();
+    backgroundBuffer_.create();
+    const std::array<Vertex, 6> backgroundVertices{{
+        makeVertex(QVector3D(-1.0F, 1.0F, 0.0F), QVector3D(0, 0, 1)),
+        makeVertex(QVector3D(1.0F, 1.0F, 0.0F), QVector3D(0, 0, 1)),
+        makeVertex(QVector3D(1.0F, -1.0F, 0.0F), QVector3D(0, 0, 1)),
+        makeVertex(QVector3D(-1.0F, 1.0F, 0.0F), QVector3D(0, 0, 1)),
+        makeVertex(QVector3D(1.0F, -1.0F, 0.0F), QVector3D(0, 0, 1)),
+        makeVertex(QVector3D(-1.0F, -1.0F, 0.0F), QVector3D(0, 0, 1))
+    }};
+    backgroundBuffer_.bind();
+    backgroundBuffer_.allocate(backgroundVertices.data(), static_cast<int>(sizeof(backgroundVertices)));
+    backgroundBuffer_.release();
     glReady_ = true;
     rebuildGrid();
     rebuildGeometry();
@@ -362,19 +392,38 @@ void CadViewport::paintGL()
     if (!shader_.isLinked())
         return;
 
-    QMatrix4x4 viewProjection = projectionMatrix() * viewMatrix();
     vertexArray_.bind();
     shader_.bind();
+    shader_.setUniformValue("uBackground", true);
+    shader_.setUniformValue("uBackgroundTop", colorVector(QColor(QStringLiteral("#D8E0E8"))));
+    shader_.setUniformValue("uBackgroundBottom", colorVector(QColor(QStringLiteral("#F5F7FA"))));
+    shader_.setUniformValue("uLit", false);
+    glDisable(GL_BLEND);
+    glDepthMask(GL_TRUE);
+    backgroundBuffer_.bind();
+    shader_.enableAttributeArray(0);
+    shader_.enableAttributeArray(1);
+    shader_.setAttributeBuffer(0, GL_FLOAT, static_cast<int>(offsetof(Vertex, x)), 3, sizeof(Vertex));
+    shader_.setAttributeBuffer(1, GL_FLOAT, static_cast<int>(offsetof(Vertex, nx)), 3, sizeof(Vertex));
+    glDisable(GL_DEPTH_TEST);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    backgroundBuffer_.release();
+    glEnable(GL_DEPTH_TEST);
+    glClear(GL_DEPTH_BUFFER_BIT);
+
+    QMatrix4x4 viewProjection = projectionMatrix() * viewMatrix();
+    shader_.setUniformValue("uBackground", false);
     shader_.setUniformValue("uViewProjection", viewProjection);
 
     if (gridVisible_ && gridBuffer_.isCreated() && !gridVertices_.empty()) {
         gridBuffer_.bind();
-        shader_.setUniformValue("uColor", colorVector(QColor(44, 59, 68)));
+        shader_.setUniformValue("uColor", colorVector(QColor(QStringLiteral("#C0C6CC"))));
         shader_.setUniformValue("uLit", false);
         shader_.enableAttributeArray(0);
         shader_.enableAttributeArray(1);
         shader_.setAttributeBuffer(0, GL_FLOAT, static_cast<int>(offsetof(Vertex, x)), 3, sizeof(Vertex));
         shader_.setAttributeBuffer(1, GL_FLOAT, static_cast<int>(offsetof(Vertex, nx)), 3, sizeof(Vertex));
+        glLineWidth(1.0F);
         glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(gridVertices_.size()));
         gridBuffer_.release();
     }
@@ -391,7 +440,7 @@ void CadViewport::paintGL()
                 continue;
             QColor color = batch.color;
             if (batch.objectIndex == selectedObject_)
-                color = QColor(103, 218, 192);
+                color = QColor(140, 184, 217);
             shader_.setUniformValue("uColor", colorVector(color));
             glDrawArrays(GL_TRIANGLES, batch.firstVertex, batch.vertexCount);
         }
@@ -422,7 +471,7 @@ void CadViewport::paintGL()
         for (const LineBatch& batch : lineBatches_) {
             QColor color = batch.color;
             if (batch.objectIndex >= 0 && batch.objectIndex == selectedObject_)
-                color = QColor(105, 237, 207);
+                color = QColor(QStringLiteral("#0078D7"));
             shader_.setUniformValue("uColor", colorVector(color));
             glDrawArrays(GL_LINES, batch.firstVertex, batch.vertexCount);
         }
@@ -485,15 +534,15 @@ void CadViewport::paintGL()
             continue;
 
         const bool active = plane.plane == activeReferencePlane_;
-        QColor color = active ? QColor(89, 213, 188, 230) : plane.color;
+        QColor color = active ? QColor(QStringLiteral("#0078D7")) : plane.color;
         painter.setPen(QPen(color, active ? 2.0 : 1.0, active ? Qt::SolidLine : Qt::DashLine));
         if (active)
-            painter.setBrush(QColor(89, 213, 188, 18));
+            painter.setBrush(QColor(0, 120, 215, 22));
         else
             painter.setBrush(Qt::NoBrush);
         painter.drawPolygon(polygon);
         const QPointF labelPosition = polygon.boundingRect().topLeft() + QPointF(5.0, 14.0);
-        painter.setPen(active ? QColor(157, 248, 224) : color);
+        painter.setPen(active ? QColor(QStringLiteral("#005A9E")) : QColor(QStringLiteral("#45545E")));
         painter.drawText(labelPosition, plane.label);
     }
 
@@ -526,25 +575,28 @@ void CadViewport::paintGL()
             dimensionText = QStringLiteral("R %1 мм").arg(radius, 0, 'g', 4);
         }
         if (profile.size() > 1) {
-            painter.setPen(QPen(QColor(105, 237, 207), 2.0, Qt::SolidLine));
-            painter.setBrush(QColor(67, 190, 162, 28));
+            painter.setPen(QPen(QColor(QStringLiteral("#0078D7")), 2.0, Qt::SolidLine));
+            painter.setBrush(QColor(0, 120, 215, 26));
             painter.drawPolygon(profile);
-            painter.setPen(QColor(171, 255, 233));
+            painter.setPen(QColor(QStringLiteral("#005A9E")));
             painter.drawText(profile.boundingRect().bottomRight() + QPointF(8.0, 16.0), dimensionText);
         }
     }
 
     const std::array<ViewCubeFace, 3> cubeFaces = makeViewCubeFaces(width(), height());
+    QFont cubeFont = painter.font();
+    cubeFont.setPointSizeF(7.5);
+    painter.setFont(cubeFont);
     for (const ViewCubeFace& face : cubeFaces) {
         const bool active = face.viewName == currentViewName_;
-        painter.setPen(QPen(active ? QColor(145, 244, 219) : QColor(95, 126, 140), 1.0));
-        painter.setBrush(active ? QColor(48, 112, 98, 235) : QColor(28, 43, 53, 225));
+        painter.setPen(QPen(active ? QColor(QStringLiteral("#0078D7")) : QColor(QStringLiteral("#71808C")), active ? 1.8 : 1.3));
+        painter.setBrush(active ? QColor(QStringLiteral("#CCE4F7")) : face.fillColor);
         painter.drawPolygon(face.polygon);
-        painter.setPen(active ? QColor(236, 255, 249) : QColor(199, 216, 224));
-        painter.drawText(face.labelPosition, face.label);
+        painter.setPen(active ? QColor(QStringLiteral("#005A9E")) : QColor(QStringLiteral("#34424D")));
+        painter.drawText(face.polygon.boundingRect().adjusted(4.0, 2.0, -4.0, -2.0), Qt::AlignCenter, face.label);
     }
-    painter.setPen(QColor(119, 148, 161));
-    painter.drawText(QPointF(width() - 105.0, 117.0), QStringLiteral("X   Y   Z"));
+    painter.setPen(QColor(QStringLiteral("#5F6E78")));
+    painter.drawText(QPointF(width() - 118.0, 151.0), QStringLiteral("X   Y   Z"));
 }
 
 void CadViewport::rebuildGrid()

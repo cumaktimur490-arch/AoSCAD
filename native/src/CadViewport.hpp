@@ -90,6 +90,7 @@ private:
     QOpenGLBuffer vertexBuffer_{QOpenGLBuffer::VertexBuffer};
     QOpenGLBuffer lineBuffer_{QOpenGLBuffer::VertexBuffer};
     QOpenGLBuffer gridBuffer_{QOpenGLBuffer::VertexBuffer};
+    QOpenGLBuffer backgroundBuffer_{QOpenGLBuffer::VertexBuffer};
     std::vector<Vertex> vertices_;
     std::vector<Vertex> lineVertices_;
     std::vector<Vertex> gridVertices_;

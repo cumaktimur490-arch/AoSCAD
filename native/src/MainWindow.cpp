@@ -24,8 +24,13 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QInputDialog>
+#include <QIcon>
 #include <QKeySequence>
 #include <QLabel>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPixmap>
+#include <QPolygonF>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
@@ -36,10 +41,14 @@
 #include <QScrollArea>
 #include <QFrame>
 #include <QSignalBlocker>
+#include <QSize>
+#include <QSizePolicy>
 #include <QStatusBar>
 #include <QStringList>
 #include <QStyle>
+#include <QTabWidget>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -47,6 +56,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
 #include <optional>
 #include <utility>
 
@@ -133,6 +143,155 @@ QWidget* xyzRow(const QStringList& labels,
     }
     return row;
 }
+
+QIcon makeRibbonIcon(const QString& name)
+{
+    QPixmap pixmap(24, 24);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(QColor(QStringLiteral("#405B70")), 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.setBrush(QColor(QStringLiteral("#D9EAF6")));
+
+    const auto polygon = [&painter](std::initializer_list<QPointF> points, const QColor& fill) {
+        QPolygonF shape;
+        for (const QPointF& point : points)
+            shape << point;
+        painter.setBrush(fill);
+        painter.drawPolygon(shape);
+    };
+    const auto drawCube = [&polygon] {
+        polygon({QPointF(12, 2.5), QPointF(21, 7), QPointF(12, 11.5), QPointF(3, 7)}, QColor(QStringLiteral("#E8F3FA")));
+        polygon({QPointF(3, 7), QPointF(12, 11.5), QPointF(12, 21.5), QPointF(3, 17)}, QColor(QStringLiteral("#C8E0F1")));
+        polygon({QPointF(12, 11.5), QPointF(21, 7), QPointF(21, 17), QPointF(12, 21.5)}, QColor(QStringLiteral("#B4D2E6")));
+    };
+
+    if (name == QStringLiteral("box") || name == QStringLiteral("iso")) {
+        drawCube();
+    } else if (name == QStringLiteral("new")) {
+        QPainterPath page;
+        page.moveTo(6, 2.5); page.lineTo(15, 2.5); page.lineTo(19, 6.5); page.lineTo(19, 21.5);
+        page.lineTo(6, 21.5); page.closeSubpath();
+        painter.drawPath(page);
+        painter.drawLine(14.5, 2.8, 14.5, 7); painter.drawLine(14.5, 7, 18.7, 7);
+        painter.drawLine(12.5, 10, 12.5, 18); painter.drawLine(8.5, 14, 16.5, 14);
+    } else if (name == QStringLiteral("open")) {
+        QPainterPath folder;
+        folder.moveTo(2.5, 7); folder.lineTo(9, 7); folder.lineTo(11, 9); folder.lineTo(21.5, 9);
+        folder.lineTo(19, 19.5); folder.lineTo(3, 19.5); folder.closeSubpath();
+        painter.drawPath(folder);
+        painter.drawLine(2.5, 7, 3.5, 4.5); painter.drawLine(3.5, 4.5, 9, 4.5); painter.drawLine(9, 4.5, 10.5, 7);
+    } else if (name == QStringLiteral("import")) {
+        QPainterPath folder;
+        folder.moveTo(2.5, 7); folder.lineTo(8.5, 7); folder.lineTo(10.5, 9); folder.lineTo(21.5, 9);
+        folder.lineTo(19, 20); folder.lineTo(3, 20); folder.closeSubpath();
+        painter.drawPath(folder);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawLine(12, 2.5, 12, 13); painter.drawLine(8.5, 9.5, 12, 13); painter.drawLine(15.5, 9.5, 12, 13);
+    } else if (name == QStringLiteral("save")) {
+        painter.drawRoundedRect(QRectF(3.5, 2.5, 17, 19), 1.5, 1.5);
+        painter.drawRect(QRectF(7, 3.5, 10, 6));
+        painter.drawRect(QRectF(7, 13, 10, 7));
+        painter.drawLine(9, 4.5, 9, 7.5); painter.drawLine(15, 4.5, 15, 7.5);
+    } else if (name == QStringLiteral("undo") || name == QStringLiteral("redo")) {
+        const bool undo = name == QStringLiteral("undo");
+        QPainterPath arrow;
+        arrow.moveTo(12, 5); arrow.cubicTo(19, 5, 20, 9, 20, 13);
+        arrow.cubicTo(20, 18, 16, 19, 11, 19);
+        painter.drawPath(arrow);
+        painter.drawLine(12, 5, undo ? 6 : 18, 5);
+        painter.drawLine(undo ? 6 : 18, 5, undo ? 9 : 15, 2.5);
+        painter.drawLine(undo ? 6 : 18, 5, undo ? 9 : 15, 8);
+    } else if (name == QStringLiteral("duplicate")) {
+        painter.drawRoundedRect(QRectF(7, 3, 13, 15), 1, 1);
+        painter.drawRoundedRect(QRectF(3, 7, 13, 14), 1, 1);
+    } else if (name == QStringLiteral("delete")) {
+        painter.drawLine(4, 6, 20, 6); painter.drawLine(9, 3.5, 15, 3.5);
+        painter.drawRoundedRect(QRectF(6, 7, 12, 14), 1, 1);
+        painter.drawLine(10, 10, 10, 18); painter.drawLine(14, 10, 14, 18);
+    } else if (name == QStringLiteral("select")) {
+        QPainterPath cursor;
+        cursor.moveTo(5, 2.5); cursor.lineTo(18.5, 14); cursor.lineTo(12.7, 14.5);
+        cursor.lineTo(15.5, 20.5); cursor.lineTo(12.5, 21.5); cursor.lineTo(9.5, 15.5);
+        cursor.lineTo(5, 20); cursor.closeSubpath();
+        painter.drawPath(cursor);
+    } else if (name == QStringLiteral("move")) {
+        painter.setBrush(Qt::NoBrush);
+        painter.drawLine(12, 4, 12, 20); painter.drawLine(4, 12, 20, 12);
+        painter.drawLine(12, 4, 9.5, 7); painter.drawLine(12, 4, 14.5, 7);
+        painter.drawLine(12, 20, 9.5, 17); painter.drawLine(12, 20, 14.5, 17);
+        painter.drawLine(4, 12, 7, 9.5); painter.drawLine(4, 12, 7, 14.5);
+        painter.drawLine(20, 12, 17, 9.5); painter.drawLine(20, 12, 17, 14.5);
+    } else if (name == QStringLiteral("rotate")) {
+        painter.setBrush(Qt::NoBrush);
+        painter.drawArc(QRectF(4, 4, 16, 16), 35 * 16, 285 * 16);
+        painter.drawLine(18, 4, 20, 8); painter.drawLine(18, 4, 14, 5);
+    } else if (name == QStringLiteral("scale")) {
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(QRectF(5, 5, 14, 14));
+        painter.drawLine(7, 17, 17, 7); painter.drawLine(17, 7, 13.5, 7); painter.drawLine(17, 7, 17, 10.5);
+    } else if (name == QStringLiteral("measure")) {
+        painter.setBrush(Qt::NoBrush);
+        painter.drawLine(4, 17, 20, 7); painter.drawLine(5, 13, 8, 18); painter.drawLine(9, 11, 12, 16);
+        painter.drawLine(13, 9, 16, 14); painter.drawLine(17, 6, 20, 11);
+    } else if (name == QStringLiteral("cylinder")) {
+        painter.drawEllipse(QRectF(4, 3, 16, 6));
+        painter.drawLine(4, 6, 4, 18); painter.drawLine(20, 6, 20, 18);
+        const QPen cylinderPen = painter.pen();
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(cylinderPen.color(), cylinderPen.widthF(), Qt::DashLine));
+        painter.drawArc(QRectF(4, 15, 16, 6), 180 * 16, 180 * 16);
+        painter.setPen(cylinderPen);
+        painter.drawArc(QRectF(4, 15, 16, 6), 0, 180 * 16);
+    } else if (name == QStringLiteral("sphere")) {
+        painter.drawEllipse(QRectF(3, 3, 18, 18));
+        painter.setBrush(Qt::NoBrush); painter.drawArc(QRectF(6, 4, 9, 16), 70 * 16, 215 * 16);
+    } else if (name == QStringLiteral("cone")) {
+        painter.drawEllipse(QRectF(4, 16, 16, 5));
+        painter.drawLine(12, 3, 4, 18); painter.drawLine(12, 3, 20, 18);
+        painter.setBrush(Qt::NoBrush); painter.drawArc(QRectF(4, 16, 16, 5), 0, 180 * 16);
+    } else if (name == QStringLiteral("torus")) {
+        painter.drawEllipse(QRectF(3, 5, 18, 14));
+        painter.setBrush(QColor(QStringLiteral("#F0F6FA"))); painter.drawEllipse(QRectF(8, 9, 8, 6));
+    } else if (name == QStringLiteral("rectangle")) {
+        painter.drawRect(QRectF(4, 5, 16, 14));
+        painter.setBrush(Qt::NoBrush); painter.drawLine(4, 12, 20, 12); painter.drawLine(12, 5, 12, 19);
+    } else if (name == QStringLiteral("circle")) {
+        painter.drawEllipse(QRectF(4, 4, 16, 16));
+        painter.setBrush(Qt::NoBrush); painter.drawLine(12, 4, 12, 20); painter.drawLine(4, 12, 20, 12);
+    } else if (name == QStringLiteral("extrude")) {
+        polygon({QPointF(4, 13), QPointF(12, 9), QPointF(20, 13), QPointF(12, 17)}, QColor(QStringLiteral("#D9EAF6")));
+        painter.drawLine(12, 14, 12, 4); painter.drawLine(12, 4, 9.5, 7); painter.drawLine(12, 4, 14.5, 7);
+        painter.drawLine(4, 13, 4, 18); painter.drawLine(20, 13, 20, 18); painter.drawLine(4, 18, 12, 22); painter.drawLine(20, 18, 12, 22);
+    } else if (name == QStringLiteral("fit")) {
+        painter.setBrush(Qt::NoBrush);
+        painter.drawLine(4, 9, 4, 4); painter.drawLine(4, 4, 9, 4);
+        painter.drawLine(15, 4, 20, 4); painter.drawLine(20, 4, 20, 9);
+        painter.drawLine(4, 15, 4, 20); painter.drawLine(4, 20, 9, 20);
+        painter.drawLine(15, 20, 20, 20); painter.drawLine(20, 20, 20, 15);
+        painter.drawLine(8, 8, 11, 11); painter.drawLine(16, 8, 13, 11);
+        painter.drawLine(8, 16, 11, 13); painter.drawLine(16, 16, 13, 13);
+    } else if (name == QStringLiteral("grid")) {
+        painter.drawRect(QRectF(3, 3, 18, 18));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawLine(9, 3, 9, 21); painter.drawLine(15, 3, 15, 21);
+        painter.drawLine(3, 9, 21, 9); painter.drawLine(3, 15, 21, 15);
+    } else if (name == QStringLiteral("top")) {
+        painter.drawRect(QRectF(4, 5, 16, 14));
+        painter.setBrush(Qt::NoBrush); painter.drawLine(7, 12, 17, 12); painter.drawLine(12, 8, 12, 16);
+    } else if (name == QStringLiteral("front")) {
+        painter.drawRect(QRectF(4, 4, 16, 16));
+        painter.setBrush(Qt::NoBrush); painter.drawLine(4, 12, 20, 12);
+    } else if (name == QStringLiteral("right")) {
+        painter.drawRect(QRectF(4, 4, 16, 16));
+        painter.setBrush(Qt::NoBrush); painter.drawLine(12, 4, 12, 20);
+    } else {
+        drawCube();
+    }
+
+    painter.end();
+    return QIcon(pixmap);
+}
 } // namespace
 
 MainWindow::MainWindow(QWidget* parent)
@@ -142,7 +301,7 @@ MainWindow::MainWindow(QWidget* parent)
     setMinimumSize(960, 640);
     setDockOptions(QMainWindow::AnimatedDocks | QMainWindow::AllowTabbedDocks | QMainWindow::AllowNestedDocks);
     createInterface();
-    createMenusAndToolbar();
+    createMenusAndRibbon();
     connectActions();
     updateTree();
     updateInspector();
@@ -154,29 +313,36 @@ MainWindow::MainWindow(QWidget* parent)
 void MainWindow::createInterface()
 {
     setStyleSheet(QStringLiteral(R"(
-        QMainWindow, QWidget { background: #12191f; color: #dce5e9; font-family: "Segoe UI", sans-serif; font-size: 10pt; }
-        QMenuBar, QToolBar, QStatusBar { background: #182128; border: 0; }
-        QMenuBar::item { padding: 6px 10px; }
-        QMenuBar::item:selected, QMenu::item:selected { background: #29453f; }
-        QMenu { background: #1b252d; border: 1px solid #35444e; }
+        QMainWindow, QWidget { background: #F0F0F0; color: #252525; font-family: "Segoe UI", sans-serif; font-size: 10pt; }
+        QMenuBar, QToolBar { background: #E6E6E6; border: 1px solid #C8C8C8; }
+        QMenuBar::item { padding: 5px 10px; }
+        QMenuBar::item:selected, QMenu::item:selected { background: #CCE4F7; color: #202020; border: 1px solid #0078D7; }
+        QMenu { background: #E6E6E6; border: 1px solid #C8C8C8; }
         QMenu::item { padding: 7px 26px 7px 12px; }
-        QToolBar { spacing: 4px; padding: 6px; border-bottom: 1px solid #2b3942; }
-        QToolBar QToolButton { background: transparent; color: #c5d0d5; border: 1px solid transparent; border-radius: 5px; padding: 6px 9px; }
-        QToolBar QToolButton:hover { background: #26353e; border-color: #3d515d; }
-        QToolBar QToolButton:checked { background: #1d3b36; color: #9cf0dc; border-color: #3c7569; }
-        QDockWidget::title { background: #182128; padding: 9px 11px; border-bottom: 1px solid #2d3a43; font-weight: 600; }
-        QLineEdit, QComboBox, QDoubleSpinBox, QTreeWidget { background: #10171c; border: 1px solid #34414a; border-radius: 5px; padding: 5px 7px; selection-background-color: #23665b; }
-        QTreeWidget { padding: 3px; alternate-background-color: #182127; }
-        QTreeWidget::item { padding: 6px 5px; border-radius: 4px; }
-        QTreeWidget::item:selected { background: #1d3d37; color: #e5fff7; }
-        QPushButton { background: #202d35; border: 1px solid #3b4a53; border-radius: 5px; padding: 7px 10px; }
-        QPushButton:hover { background: #2a3a44; border-color: #5a747e; }
-        QPushButton#accentButton { background: #61d6bd; color: #11231f; border-color: #79e4cd; font-weight: 700; }
-        QPushButton#accentButton:hover { background: #83e8d3; }
-        QGroupBox { border: 1px solid #2d3a43; border-radius: 6px; margin-top: 11px; padding: 9px; font-weight: 600; }
-        QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 5px; color: #9aa9b1; }
-        QLabel#axisLabel { color: #81919a; font-size: 9pt; }
-        QStatusBar { color: #93a1a9; border-top: 1px solid #2b3942; }
+        QToolBar { spacing: 0; padding: 0; border-bottom: 1px solid #C8C8C8; }
+        QToolBar QToolButton { background: transparent; color: #252525; border: 1px solid transparent; padding: 4px; }
+        QToolBar QToolButton:hover { background: #F0F0F0; border-color: #C8C8C8; }
+        QToolBar QToolButton:checked { background: #CCE4F7; color: #202020; border-color: #0078D7; }
+        QTabWidget::pane { background: #F0F0F0; border: 1px solid #C8C8C8; }
+        QTabBar::tab { background: #E6E6E6; border: 1px solid #C8C8C8; padding: 6px 16px; margin-right: 1px; }
+        QTabBar::tab:selected { background: #F0F0F0; color: #202020; border-bottom-color: #F0F0F0; }
+        QToolButton#ribbonButton { background: #E6E6E6; color: #252525; border: 1px solid transparent; padding: 3px; }
+        QToolButton#ribbonButton:hover { background: #FFFFFF; border-color: #C8C8C8; }
+        QToolButton#ribbonButton:checked { background: #CCE4F7; border: 1px solid #0078D7; }
+        QDockWidget { border: 1px solid #C8C8C8; }
+        QDockWidget::title { background: #E6E6E6; padding: 8px 10px; border-bottom: 1px solid #C8C8C8; font-weight: 600; }
+        QLineEdit, QComboBox, QDoubleSpinBox, QTreeWidget, QTableWidget { background: #FFFFFF; color: #252525; border: 1px solid #C8C8C8; padding: 5px 7px; selection-background-color: #CCE4F7; selection-color: #202020; }
+        QTreeWidget, QTableWidget { background: #FFFFFF; alternate-background-color: #FFFFFF; padding: 3px; }
+        QTreeWidget::item, QTableWidget::item { padding: 5px; }
+        QTreeWidget::item:selected, QTableWidget::item:selected, QAbstractItemView::item:selected { background: #CCE4F7; color: #202020; border: 1px solid #0078D7; }
+        QPushButton { background: #E6E6E6; color: #252525; border: 1px solid #C8C8C8; padding: 7px 10px; }
+        QPushButton:hover { background: #FFFFFF; border-color: #0078D7; }
+        QPushButton#accentButton { background: #CCE4F7; color: #202020; border-color: #0078D7; font-weight: 700; }
+        QPushButton#accentButton:hover { background: #D9ECFA; }
+        QGroupBox { border: 1px solid #C8C8C8; margin-top: 11px; padding: 9px; font-weight: 600; }
+        QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 5px; color: #4F5B65; }
+        QLabel#axisLabel { color: #5F6B75; font-size: 9pt; }
+        QStatusBar { background: #F0F0F0; color: #5F6770; border-top: 1px solid #C8C8C8; }
     )"));
 
     viewport_ = new CadViewport(&document_, this);
@@ -209,7 +375,7 @@ void MainWindow::createProjectDock()
     layout->addWidget(projectName_);
 
     auto* title = new QLabel(QStringLiteral("КОМПОНЕНТЫ"), panel);
-    title->setStyleSheet(QStringLiteral("color:#7f9099;font-size:8pt;font-weight:700;letter-spacing:1px;padding:3px 2px;"));
+    title->setStyleSheet(QStringLiteral("color:#5B6570;font-size:8pt;font-weight:700;letter-spacing:1px;padding:3px 2px;"));
     layout->addWidget(title);
 
     tree_ = new QTreeWidget(panel);
@@ -219,17 +385,8 @@ void MainWindow::createProjectDock()
     tree_->setSelectionMode(QAbstractItemView::SingleSelection);
     layout->addWidget(tree_, 1);
 
-    auto* addButton = new QPushButton(QStringLiteral("＋  Добавить бокс"), panel);
-    addButton->setObjectName(QStringLiteral("accentButton"));
-    layout->addWidget(addButton);
-    auto* importButton = new QPushButton(QStringLiteral("Импортировать CAD-файл"), panel);
-    layout->addWidget(importButton);
-
     dock->setWidget(panel);
     addDockWidget(Qt::LeftDockWidgetArea, dock);
-
-    connect(addButton, &QPushButton::clicked, this, [this] { addPrimitive(QStringLiteral("box")); });
-    connect(importButton, &QPushButton::clicked, this, [this] { importFiles(); });
     connect(projectName_, &QLineEdit::editingFinished, this, [this] {
         const QString value = projectName_->text().trimmed();
         if (!value.isEmpty()) {
@@ -321,12 +478,12 @@ void MainWindow::createInspectorDock()
     variablesLayout->addWidget(variableButtons);
     variablesErrorLabel_ = new QLabel(variablesGroup);
     variablesErrorLabel_->setWordWrap(true);
-    variablesErrorLabel_->setStyleSheet(QStringLiteral("color:#f08a83;font-size:8pt;"));
+    variablesErrorLabel_->setStyleSheet(QStringLiteral("color:#B42318;font-size:8pt;"));
     variablesLayout->addWidget(variablesErrorLabel_);
     layout->addWidget(variablesGroup);
 
     auto* objectTitle = new QLabel(QStringLiteral("ОБЪЕКТ"), panel);
-    objectTitle->setStyleSheet(QStringLiteral("color:#7f9099;font-size:8pt;font-weight:700;letter-spacing:1px;margin-top:8px;"));
+    objectTitle->setStyleSheet(QStringLiteral("color:#5B6570;font-size:8pt;font-weight:700;letter-spacing:1px;margin-top:8px;"));
     layout->addWidget(objectTitle);
     objectName_ = new QLineEdit(panel);
     objectName_->setPlaceholderText(QStringLiteral("Выберите объект"));
@@ -364,7 +521,7 @@ void MainWindow::createInspectorDock()
 
     sketchConstraintsLabel_ = new QLabel(panel);
     sketchConstraintsLabel_->setWordWrap(true);
-    sketchConstraintsLabel_->setStyleSheet(QStringLiteral("color:#9db9b4;font-size:8pt;padding:6px;background:#182229;border-radius:5px;"));
+    sketchConstraintsLabel_->setStyleSheet(QStringLiteral("color:#45545E;font-size:8pt;padding:6px;background:#FFFFFF;border:1px solid #C8C8C8;"));
     sketchConstraintsLabel_->setVisible(false);
     layout->addWidget(sketchConstraintsLabel_);
 
@@ -425,7 +582,7 @@ void MainWindow::createInspectorDock()
 
     auto* note = new QLabel(QStringLiteral("STEP / IGES сохраняют обменную CAD-геометрию. STL предназначен для Aeros Engine и 3D-печати."), panel);
     note->setWordWrap(true);
-    note->setStyleSheet(QStringLiteral("color:#82919a;font-size:8pt;padding:8px;background:#182229;border-radius:5px;"));
+    note->setStyleSheet(QStringLiteral("color:#5F6B75;font-size:8pt;padding:8px;background:#FFFFFF;border:1px solid #C8C8C8;"));
     layout->addWidget(note);
 
     auto* scrollArea = new QScrollArea(dock);
@@ -553,7 +710,7 @@ void MainWindow::createInspectorDock()
     });
 }
 
-void MainWindow::createMenusAndToolbar()
+void MainWindow::createMenusAndRibbon()
 {
     auto* fileMenu = menuBar()->addMenu(QStringLiteral("Файл"));
     auto* editMenu = menuBar()->addMenu(QStringLiteral("Правка"));
@@ -561,9 +718,19 @@ void MainWindow::createMenusAndToolbar()
     auto* insertMenu = menuBar()->addMenu(QStringLiteral("Создать"));
     auto* helpMenu = menuBar()->addMenu(QStringLiteral("Справка"));
 
-    auto* toolBar = addToolBar(QStringLiteral("Инструменты"));
+    auto* toolBar = addToolBar(QStringLiteral("Лента команд"));
+    toolBar->setObjectName(QStringLiteral("ribbonHost"));
     toolBar->setMovable(false);
-    toolBar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    toolBar->setFloatable(false);
+    toolBar->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+    toolBar->setIconSize(QSize(24, 24));
+    ribbonTabs_ = new QTabWidget(toolBar);
+    ribbonTabs_->setObjectName(QStringLiteral("commandRibbon"));
+    ribbonTabs_->setDocumentMode(true);
+    ribbonTabs_->setTabPosition(QTabWidget::North);
+    ribbonTabs_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    ribbonTabs_->setMinimumHeight(98);
+    toolBar->addWidget(ribbonTabs_);
 
     QAction* newAction = fileMenu->addAction(QStringLiteral("Новый проект"));
     newAction->setShortcut(QKeySequence::New);
@@ -587,12 +754,6 @@ void MainWindow::createMenusAndToolbar()
     QAction* quitAction = fileMenu->addAction(QStringLiteral("Выход"));
     quitAction->setShortcut(QKeySequence::Quit);
 
-    toolBar->addAction(newAction);
-    toolBar->addAction(openAction);
-    toolBar->addAction(importAction);
-    toolBar->addAction(saveAction);
-    toolBar->addSeparator();
-
     undoAction_ = editMenu->addAction(QStringLiteral("Отменить"));
     undoAction_->setShortcut(QKeySequence::Undo);
     redoAction_ = editMenu->addAction(QStringLiteral("Повторить"));
@@ -605,25 +766,35 @@ void MainWindow::createMenusAndToolbar()
 
     auto* toolGroup = new QActionGroup(this);
     toolGroup->setExclusive(true);
-    const auto addToolAction = [this, toolBar, toolGroup](const QString& name, const QKeySequence& shortcut, CadViewport::Tool tool) {
-        QAction* action = toolBar->addAction(name);
+    const auto addToolAction = [this, toolGroup](const QString& name,
+                                                 const QString& iconName,
+                                                 const QString& ribbonText,
+                                                 const QKeySequence& shortcut,
+                                                 CadViewport::Tool tool) {
+        auto* action = new QAction(makeRibbonIcon(iconName), name, this);
         action->setCheckable(true);
         action->setShortcut(shortcut);
         action->setShortcutContext(Qt::ApplicationShortcut);
+        action->setProperty("ribbonText", ribbonText);
+        addAction(action);
         toolGroup->addAction(action);
         connect(action, &QAction::triggered, this, [this, tool] { setTool(tool); });
         return action;
     };
-    QAction* selectAction = addToolAction(QStringLiteral("Выбор"), QKeySequence(QStringLiteral("Q")), CadViewport::Tool::Select);
-    addToolAction(QStringLiteral("Переместить"), QKeySequence(QStringLiteral("W")), CadViewport::Tool::Move);
-    addToolAction(QStringLiteral("Вращать"), QKeySequence(QStringLiteral("E")), CadViewport::Tool::Rotate);
-    addToolAction(QStringLiteral("Масштаб"), QKeySequence(QStringLiteral("R")), CadViewport::Tool::Scale);
-    addToolAction(QStringLiteral("Измерить"), QKeySequence(QStringLiteral("M")), CadViewport::Tool::Measure);
+    QAction* selectAction = addToolAction(QStringLiteral("Выбор"), QStringLiteral("select"), QStringLiteral("Выбор"),
+                                          QKeySequence(QStringLiteral("Q")), CadViewport::Tool::Select);
+    QAction* moveAction = addToolAction(QStringLiteral("Переместить"), QStringLiteral("move"), QStringLiteral("Перемещение"),
+                                        QKeySequence(QStringLiteral("W")), CadViewport::Tool::Move);
+    QAction* rotateAction = addToolAction(QStringLiteral("Вращать"), QStringLiteral("rotate"), QStringLiteral("Вращение"),
+                                          QKeySequence(QStringLiteral("E")), CadViewport::Tool::Rotate);
+    QAction* scaleAction = addToolAction(QStringLiteral("Масштаб"), QStringLiteral("scale"), QStringLiteral("Масштаб"),
+                                         QKeySequence(QStringLiteral("R")), CadViewport::Tool::Scale);
+    QAction* measureAction = addToolAction(QStringLiteral("Измерить"), QStringLiteral("measure"), QStringLiteral("Измерение"),
+                                           QKeySequence(QStringLiteral("M")), CadViewport::Tool::Measure);
     selectAction->setChecked(true);
     undoAction_->setEnabled(false);
     redoAction_->setEnabled(false);
 
-    toolBar->addSeparator();
     QAction* boxAction = insertMenu->addAction(QStringLiteral("Бокс"));
     QAction* cylinderAction = insertMenu->addAction(QStringLiteral("Цилиндр"));
     QAction* sphereAction = insertMenu->addAction(QStringLiteral("Сфера"));
@@ -633,15 +804,6 @@ void MainWindow::createMenusAndToolbar()
     QAction* rectangleSketchAction = insertMenu->addAction(QStringLiteral("Эскиз · прямоугольник"));
     QAction* circleSketchAction = insertMenu->addAction(QStringLiteral("Эскиз · окружность"));
     QAction* extrudeAction = insertMenu->addAction(QStringLiteral("Выдавливание…"));
-    toolBar->addAction(boxAction);
-    toolBar->addAction(cylinderAction);
-    toolBar->addAction(sphereAction);
-    toolBar->addAction(coneAction);
-    toolBar->addAction(torusAction);
-    toolBar->addSeparator();
-    toolBar->addAction(rectangleSketchAction);
-    toolBar->addAction(circleSketchAction);
-    toolBar->addAction(extrudeAction);
 
     QAction* fitAction = viewMenu->addAction(QStringLiteral("Вписать модель"));
     fitAction->setShortcut(QKeySequence(QStringLiteral("F")));
@@ -653,13 +815,115 @@ void MainWindow::createMenusAndToolbar()
     QAction* topAction = viewMenu->addAction(QStringLiteral("Сверху"));
     QAction* frontAction = viewMenu->addAction(QStringLiteral("Спереди"));
     QAction* rightAction = viewMenu->addAction(QStringLiteral("Справа"));
-    toolBar->addAction(fitAction);
-    toolBar->addAction(gridAction);
 
     QAction* updateAction = helpMenu->addAction(QStringLiteral("Проверить обновления…"));
     helpMenu->addSeparator();
     QAction* compatibilityAction = helpMenu->addAction(QStringLiteral("Форматы и совместимость CAD"));
     QAction* aboutAction = helpMenu->addAction(QStringLiteral("О программе AoSCAD Studio"));
+
+    const auto setRibbonIcon = [](QAction* action, const QString& iconName, const QString& ribbonText) {
+        action->setIcon(makeRibbonIcon(iconName));
+        action->setProperty("ribbonText", ribbonText);
+    };
+    setRibbonIcon(newAction, QStringLiteral("new"), QStringLiteral("Новый"));
+    setRibbonIcon(openAction, QStringLiteral("open"), QStringLiteral("Открыть"));
+    setRibbonIcon(importAction, QStringLiteral("import"), QStringLiteral("Импорт"));
+    setRibbonIcon(saveAction, QStringLiteral("save"), QStringLiteral("Сохранить"));
+    setRibbonIcon(undoAction_, QStringLiteral("undo"), QStringLiteral("Отменить"));
+    setRibbonIcon(redoAction_, QStringLiteral("redo"), QStringLiteral("Повторить"));
+    setRibbonIcon(duplicateAction, QStringLiteral("duplicate"), QStringLiteral("Дублировать"));
+    setRibbonIcon(deleteAction, QStringLiteral("delete"), QStringLiteral("Удалить"));
+    setRibbonIcon(boxAction, QStringLiteral("box"), QStringLiteral("Бокс"));
+    setRibbonIcon(cylinderAction, QStringLiteral("cylinder"), QStringLiteral("Цилиндр"));
+    setRibbonIcon(sphereAction, QStringLiteral("sphere"), QStringLiteral("Сфера"));
+    setRibbonIcon(coneAction, QStringLiteral("cone"), QStringLiteral("Конус"));
+    setRibbonIcon(torusAction, QStringLiteral("torus"), QStringLiteral("Тор"));
+    setRibbonIcon(rectangleSketchAction, QStringLiteral("rectangle"), QStringLiteral("Прямоугольник"));
+    setRibbonIcon(circleSketchAction, QStringLiteral("circle"), QStringLiteral("Окружность"));
+    setRibbonIcon(extrudeAction, QStringLiteral("extrude"), QStringLiteral("Выдавить"));
+    setRibbonIcon(fitAction, QStringLiteral("fit"), QStringLiteral("Вписать"));
+    setRibbonIcon(gridAction, QStringLiteral("grid"), QStringLiteral("Сетка"));
+    setRibbonIcon(isoAction, QStringLiteral("iso"), QStringLiteral("Изометрия"));
+    setRibbonIcon(topAction, QStringLiteral("top"), QStringLiteral("Сверху"));
+    setRibbonIcon(frontAction, QStringLiteral("front"), QStringLiteral("Спереди"));
+    setRibbonIcon(rightAction, QStringLiteral("right"), QStringLiteral("Справа"));
+
+    const auto createRibbonPage = [this](const QString& title, QHBoxLayout*& pageLayout) {
+        auto* page = new QWidget(ribbonTabs_);
+        pageLayout = new QHBoxLayout(page);
+        pageLayout->setContentsMargins(8, 3, 8, 3);
+        pageLayout->setSpacing(8);
+        ribbonTabs_->addTab(page, title);
+        return page;
+    };
+    const auto addRibbonGroup = [](QWidget* page, QHBoxLayout* pageLayout, const QString& title,
+                                   std::initializer_list<QAction*> actions) {
+        auto* group = new QWidget(page);
+        auto* groupLayout = new QVBoxLayout(group);
+        groupLayout->setContentsMargins(0, 0, 0, 0);
+        groupLayout->setSpacing(1);
+        auto* buttons = new QHBoxLayout;
+        buttons->setContentsMargins(0, 0, 0, 0);
+        buttons->setSpacing(2);
+        for (QAction* action : actions) {
+            auto* button = new QToolButton(group);
+            button->setDefaultAction(action);
+            const QString ribbonText = action->property("ribbonText").toString();
+            if (!ribbonText.isEmpty())
+                button->setText(ribbonText);
+            button->setObjectName(QStringLiteral("ribbonButton"));
+            button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+            button->setIconSize(QSize(24, 24));
+            button->setMinimumSize(72, 58);
+            button->setMaximumWidth(96);
+            buttons->addWidget(button);
+        }
+        auto* caption = new QLabel(title, group);
+        caption->setAlignment(Qt::AlignCenter);
+        caption->setStyleSheet(QStringLiteral("color:#66727C;font-size:8pt;"));
+        groupLayout->addLayout(buttons, 1);
+        groupLayout->addWidget(caption);
+        pageLayout->addWidget(group);
+    };
+    const auto addRibbonSeparator = [](QWidget* page, QHBoxLayout* pageLayout) {
+        auto* separator = new QFrame(page);
+        separator->setFrameShape(QFrame::VLine);
+        separator->setFrameShadow(QFrame::Plain);
+        separator->setStyleSheet(QStringLiteral("color:#C8C8C8;"));
+        pageLayout->addWidget(separator);
+    };
+
+    QHBoxLayout* sketchLayout = nullptr;
+    QWidget* sketchPage = createRibbonPage(QStringLiteral("Эскиз"), sketchLayout);
+    addRibbonGroup(sketchPage, sketchLayout, QStringLiteral("Профили"), {rectangleSketchAction, circleSketchAction});
+    addRibbonSeparator(sketchPage, sketchLayout);
+    addRibbonGroup(sketchPage, sketchLayout, QStringLiteral("Объём"), {extrudeAction});
+    sketchLayout->addStretch(1);
+
+    QHBoxLayout* primitivesLayout = nullptr;
+    QWidget* primitivesPage = createRibbonPage(QStringLiteral("Примитивы"), primitivesLayout);
+    addRibbonGroup(primitivesPage, primitivesLayout, QStringLiteral("Создать тело"),
+                   {boxAction, cylinderAction, sphereAction, coneAction, torusAction});
+    primitivesLayout->addStretch(1);
+
+    QHBoxLayout* operationsLayout = nullptr;
+    QWidget* operationsPage = createRibbonPage(QStringLiteral("Операции"), operationsLayout);
+    addRibbonGroup(operationsPage, operationsLayout, QStringLiteral("Проект"), {newAction, openAction, importAction, saveAction});
+    addRibbonSeparator(operationsPage, operationsLayout);
+    addRibbonGroup(operationsPage, operationsLayout, QStringLiteral("История"), {undoAction_, redoAction_});
+    addRibbonSeparator(operationsPage, operationsLayout);
+    addRibbonGroup(operationsPage, operationsLayout, QStringLiteral("Редактирование"), {duplicateAction, deleteAction});
+    addRibbonSeparator(operationsPage, operationsLayout);
+    addRibbonGroup(operationsPage, operationsLayout, QStringLiteral("Инструменты"),
+                   {selectAction, moveAction, rotateAction, scaleAction, measureAction});
+    operationsLayout->addStretch(1);
+
+    QHBoxLayout* viewLayout = nullptr;
+    QWidget* viewPage = createRibbonPage(QStringLiteral("Вид"), viewLayout);
+    addRibbonGroup(viewPage, viewLayout, QStringLiteral("Камера"), {fitAction, gridAction});
+    addRibbonSeparator(viewPage, viewLayout);
+    addRibbonGroup(viewPage, viewLayout, QStringLiteral("Стандартные виды"), {isoAction, topAction, frontAction, rightAction});
+    viewLayout->addStretch(1);
 
     connect(newAction, &QAction::triggered, this, [this] { newProject(); });
     connect(openAction, &QAction::triggered, this, [this] { openProject(); });
@@ -892,8 +1156,8 @@ void MainWindow::updateInspector(bool updateMeasurements)
             material_->setCurrentIndex(materialIndex);
         }
         colorButton_->setText(object.color.name(QColor::HexRgb).toUpper());
-        colorButton_->setStyleSheet(QStringLiteral("background:%1;color:%2;border:1px solid #53636b;padding:8px;border-radius:5px;")
-                                        .arg(object.color.name(), object.color.lightness() > 140 ? QStringLiteral("#10171c") : QStringLiteral("white")));
+        colorButton_->setStyleSheet(QStringLiteral("background:%1;color:%2;border:1px solid #C8C8C8;padding:8px;")
+                                        .arg(object.color.name(), object.color.lightness() > 140 ? QStringLiteral("#252525") : QStringLiteral("white")));
         if (updateMeasurements)
             updatePhysicalInspector(object);
     } else {
@@ -1359,17 +1623,17 @@ void MainWindow::updateExtrudePreview()
         viewport_->setPreviewShape(preview);
         hasValidExtrudePreview_ = true;
         extrudeCommitButton_->setEnabled(true);
-        extrudeStatusLabel_->setStyleSheet(QStringLiteral("color:#81e3c8;font-size:8pt;"));
+        extrudeStatusLabel_->setStyleSheet(QStringLiteral("color:#1E6B50;font-size:8pt;"));
         extrudeStatusLabel_->setText(QStringLiteral("Предпросмотр обновлён · %1 мм. Подтвердите фичу или отмените.").arg(length, 0, 'g', 8));
     } catch (const Standard_Failure& error) {
         viewport_->setTemporarilyHiddenObject(-1);
         viewport_->clearPreviewShape();
-        extrudeStatusLabel_->setStyleSheet(QStringLiteral("color:#f08a83;font-size:8pt;"));
+        extrudeStatusLabel_->setStyleSheet(QStringLiteral("color:#B42318;font-size:8pt;"));
         extrudeStatusLabel_->setText(QString::fromLocal8Bit(error.GetMessageString()));
     } catch (const std::exception& error) {
         viewport_->setTemporarilyHiddenObject(-1);
         viewport_->clearPreviewShape();
-        extrudeStatusLabel_->setStyleSheet(QStringLiteral("color:#f08a83;font-size:8pt;"));
+        extrudeStatusLabel_->setStyleSheet(QStringLiteral("color:#B42318;font-size:8pt;"));
         extrudeStatusLabel_->setText(QString::fromUtf8(error.what()));
     }
 }
