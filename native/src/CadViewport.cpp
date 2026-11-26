@@ -61,36 +61,6 @@ bool rayTriangle(const QVector3D& origin,
     return distance >= 0.0F;
 }
 
-struct ViewCubeFace {
-    QString viewName;
-    QString label;
-    QPolygonF polygon;
-    QPointF labelPosition;
-};
-
-std::array<ViewCubeFace, 3> makeViewCubeFaces(int width, int height)
-{
-    const QPointF center(std::max(58, width - 60), std::min(68, std::max(48, height - 48)));
-    const auto point = [&center](qreal x, qreal y) { return center + QPointF(x, y); };
-    std::array<ViewCubeFace, 3> faces;
-
-    faces[0].viewName = QStringLiteral("top");
-    faces[0].label = QStringLiteral("ВЕРХ");
-    faces[0].polygon << point(0, -30) << point(27, -15) << point(0, 0) << point(-27, -15);
-    faces[0].labelPosition = point(-11, -15);
-
-    faces[1].viewName = QStringLiteral("front");
-    faces[1].label = QStringLiteral("ПЕРЕД");
-    faces[1].polygon << point(-27, -15) << point(0, 0) << point(0, 31) << point(-27, 16);
-    faces[1].labelPosition = point(-24, 10);
-
-    faces[2].viewName = QStringLiteral("right");
-    faces[2].label = QStringLiteral("ПРАВО");
-    faces[2].polygon << point(0, 0) << point(27, -15) << point(27, 16) << point(0, 31);
-    faces[2].labelPosition = point(2, 10);
-    return faces;
-}
-
 QString planeCode(CadViewport::ReferencePlane plane)
 {
     switch (plane) {
@@ -188,6 +158,14 @@ void CadViewport::setGridVisible(bool visible)
     update();
 }
 
+void CadViewport::setDarkTheme(bool dark)
+{
+    if (darkTheme_ == dark)
+        return;
+    darkTheme_ = dark;
+    update();
+}
+
 void CadViewport::setActiveReferencePlane(ReferencePlane plane)
 {
     if (activeReferencePlane_ == plane)
@@ -230,19 +208,15 @@ QMatrix4x4 CadViewport::viewMatrix() const
 void CadViewport::setStandardView(const QString& viewName)
 {
     if (viewName == QStringLiteral("top")) {
-        currentViewName_ = QStringLiteral("top");
         yawDegrees_ = -90.0F;
         pitchDegrees_ = 89.0F;
     } else if (viewName == QStringLiteral("front")) {
-        currentViewName_ = QStringLiteral("front");
         yawDegrees_ = -90.0F;
         pitchDegrees_ = 0.0F;
     } else if (viewName == QStringLiteral("right")) {
-        currentViewName_ = QStringLiteral("right");
         yawDegrees_ = 0.0F;
         pitchDegrees_ = 0.0F;
     } else {
-        currentViewName_ = QStringLiteral("iso");
         yawDegrees_ = -45.0F;
         pitchDegrees_ = 28.0F;
     }
@@ -305,7 +279,6 @@ void CadViewport::initializeGL()
     glEnable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
     glEnable(GL_MULTISAMPLE);
-    glClearColor(0.067F, 0.090F, 0.114F, 1.0F);
 
     const char* vertexShader = R"(
         #version 330 core
@@ -358,6 +331,11 @@ void CadViewport::paintGL()
 {
     const qreal ratio = devicePixelRatioF();
     glViewport(0, 0, qRound(width() * ratio), qRound(height() * ratio));
+    const QColor background = darkTheme_ ? QColor(QStringLiteral("#424242")) : QColor(QStringLiteral("#F3F5F7"));
+    const QColor selectionColor = darkTheme_ ? QColor(QStringLiteral("#22C9D0")) : QColor(QStringLiteral("#0078D7"));
+    const QColor selectionTextColor = darkTheme_ ? QColor(QStringLiteral("#C9F6F7")) : QColor(QStringLiteral("#005A9E"));
+    const QColor selectionFillColor = darkTheme_ ? QColor(34, 201, 208, 24) : QColor(0, 120, 215, 22);
+    glClearColor(background.redF(), background.greenF(), background.blueF(), background.alphaF());
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     if (!shader_.isLinked())
         return;
@@ -369,12 +347,14 @@ void CadViewport::paintGL()
 
     if (gridVisible_ && gridBuffer_.isCreated() && !gridVertices_.empty()) {
         gridBuffer_.bind();
-        shader_.setUniformValue("uColor", colorVector(QColor(44, 59, 68)));
+        const QColor gridColor = darkTheme_ ? QColor(QStringLiteral("#5A5A5A")) : QColor(QStringLiteral("#D0D5DA"));
+        shader_.setUniformValue("uColor", colorVector(gridColor));
         shader_.setUniformValue("uLit", false);
         shader_.enableAttributeArray(0);
         shader_.enableAttributeArray(1);
         shader_.setAttributeBuffer(0, GL_FLOAT, static_cast<int>(offsetof(Vertex, x)), 3, sizeof(Vertex));
         shader_.setAttributeBuffer(1, GL_FLOAT, static_cast<int>(offsetof(Vertex, nx)), 3, sizeof(Vertex));
+        glLineWidth(1.0F);
         glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(gridVertices_.size()));
         gridBuffer_.release();
     }
@@ -391,7 +371,7 @@ void CadViewport::paintGL()
                 continue;
             QColor color = batch.color;
             if (batch.objectIndex == selectedObject_)
-                color = QColor(103, 218, 192);
+                color = darkTheme_ ? QColor(140, 184, 217) : QColor(0, 120, 215);
             shader_.setUniformValue("uColor", colorVector(color));
             glDrawArrays(GL_TRIANGLES, batch.firstVertex, batch.vertexCount);
         }
@@ -422,7 +402,7 @@ void CadViewport::paintGL()
         for (const LineBatch& batch : lineBatches_) {
             QColor color = batch.color;
             if (batch.objectIndex >= 0 && batch.objectIndex == selectedObject_)
-                color = QColor(105, 237, 207);
+                color = selectionColor;
             shader_.setUniformValue("uColor", colorVector(color));
             glDrawArrays(GL_LINES, batch.firstVertex, batch.vertexCount);
         }
@@ -455,18 +435,17 @@ void CadViewport::paintGL()
     struct PlaneOverlay {
         ReferencePlane plane;
         QString label;
-        QColor color;
         std::array<QVector3D, 4> corners;
     };
     constexpr float planeHalfSize = 70.0F;
     const std::array<PlaneOverlay, 3> planes{{
-        {ReferencePlane::XY, QStringLiteral("XY"), QColor(95, 164, 207, 150),
+        {ReferencePlane::XY, QStringLiteral("XY"),
          {QVector3D(-planeHalfSize, -planeHalfSize, 0.0F), QVector3D(planeHalfSize, -planeHalfSize, 0.0F),
           QVector3D(planeHalfSize, planeHalfSize, 0.0F), QVector3D(-planeHalfSize, planeHalfSize, 0.0F)}},
-        {ReferencePlane::YZ, QStringLiteral("YZ"), QColor(104, 197, 145, 150),
+        {ReferencePlane::YZ, QStringLiteral("YZ"),
          {QVector3D(0.0F, -planeHalfSize, -planeHalfSize), QVector3D(0.0F, planeHalfSize, -planeHalfSize),
           QVector3D(0.0F, planeHalfSize, planeHalfSize), QVector3D(0.0F, -planeHalfSize, planeHalfSize)}},
-        {ReferencePlane::ZX, QStringLiteral("ZX"), QColor(221, 165, 94, 150),
+        {ReferencePlane::ZX, QStringLiteral("ZX"),
          {QVector3D(-planeHalfSize, 0.0F, -planeHalfSize), QVector3D(planeHalfSize, 0.0F, -planeHalfSize),
           QVector3D(planeHalfSize, 0.0F, planeHalfSize), QVector3D(-planeHalfSize, 0.0F, planeHalfSize)}}
     }};
@@ -484,16 +463,14 @@ void CadViewport::paintGL()
         if (!projected)
             continue;
 
-        const bool active = plane.plane == activeReferencePlane_;
-        QColor color = active ? QColor(89, 213, 188, 230) : plane.color;
-        painter.setPen(QPen(color, active ? 2.0 : 1.0, active ? Qt::SolidLine : Qt::DashLine));
-        if (active)
-            painter.setBrush(QColor(89, 213, 188, 18));
-        else
-            painter.setBrush(Qt::NoBrush);
+        if (plane.plane != activeReferencePlane_)
+            continue;
+
+        painter.setPen(QPen(selectionColor, 2.0, Qt::SolidLine));
+        painter.setBrush(selectionFillColor);
         painter.drawPolygon(polygon);
         const QPointF labelPosition = polygon.boundingRect().topLeft() + QPointF(5.0, 14.0);
-        painter.setPen(active ? QColor(157, 248, 224) : color);
+        painter.setPen(selectionTextColor);
         painter.drawText(labelPosition, plane.label);
     }
 
@@ -526,25 +503,46 @@ void CadViewport::paintGL()
             dimensionText = QStringLiteral("R %1 мм").arg(radius, 0, 'g', 4);
         }
         if (profile.size() > 1) {
-            painter.setPen(QPen(QColor(105, 237, 207), 2.0, Qt::SolidLine));
-            painter.setBrush(QColor(67, 190, 162, 28));
+            painter.setPen(QPen(selectionColor, 2.0, Qt::SolidLine));
+            painter.setBrush(selectionFillColor);
             painter.drawPolygon(profile);
-            painter.setPen(QColor(171, 255, 233));
+            painter.setPen(selectionTextColor);
             painter.drawText(profile.boundingRect().bottomRight() + QPointF(8.0, 16.0), dimensionText);
         }
     }
 
-    const std::array<ViewCubeFace, 3> cubeFaces = makeViewCubeFaces(width(), height());
-    for (const ViewCubeFace& face : cubeFaces) {
-        const bool active = face.viewName == currentViewName_;
-        painter.setPen(QPen(active ? QColor(145, 244, 219) : QColor(95, 126, 140), 1.0));
-        painter.setBrush(active ? QColor(48, 112, 98, 235) : QColor(28, 43, 53, 225));
-        painter.drawPolygon(face.polygon);
-        painter.setPen(active ? QColor(236, 255, 249) : QColor(199, 216, 224));
-        painter.drawText(face.labelPosition, face.label);
+    const QPointF triadOrigin(34.0, height() - 36.0);
+    const QVector3D triadAxes[]{QVector3D(1, 0, 0), QVector3D(0, 1, 0), QVector3D(0, 0, 1)};
+    const QColor triadColors[]{QColor(224, 82, 82), QColor(82, 190, 104), QColor(81, 151, 233)};
+    const QString triadLabels[]{QStringLiteral("X"), QStringLiteral("Y"), QStringLiteral("Z")};
+    QPointF projectedOrigin;
+    if (projectPoint(target_, projectedOrigin)) {
+        QFont triadFont = painter.font();
+        triadFont.setPointSizeF(7.5);
+        painter.setFont(triadFont);
+        for (int axis = 0; axis < 3; ++axis) {
+            QPointF projectedTip;
+            if (!projectPoint(target_ + triadAxes[axis] * 30.0F, projectedTip))
+                continue;
+            QPointF direction = projectedTip - projectedOrigin;
+            const qreal length = std::hypot(direction.x(), direction.y());
+            if (length < 1.0)
+                continue;
+            direction *= 23.0 / length;
+            const QPointF tip = triadOrigin + direction;
+            const QPointF unit = direction * (1.0 / 23.0);
+            const QPointF side(-unit.y(), unit.x());
+            painter.setPen(QPen(triadColors[axis], 1.7, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter.drawLine(triadOrigin, tip);
+            painter.drawLine(tip, tip - unit * 6.0 + side * 2.8);
+            painter.drawLine(tip, tip - unit * 6.0 - side * 2.8);
+            painter.setPen(triadColors[axis].lighter(125));
+            painter.drawText(tip + QPointF(3.0, -2.0), triadLabels[axis]);
+        }
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(QStringLiteral("#D0B85B")));
+        painter.drawEllipse(triadOrigin - QPointF(2.5, 2.5), 5.0, 5.0);
     }
-    painter.setPen(QColor(119, 148, 161));
-    painter.drawText(QPointF(width() - 105.0, 117.0), QStringLiteral("X   Y   Z"));
 }
 
 void CadViewport::rebuildGrid()
@@ -878,14 +876,6 @@ void CadViewport::mousePressEvent(QMouseEvent* event)
     if (event->button() != Qt::LeftButton)
         return QOpenGLWidget::mousePressEvent(event);
 
-    for (const ViewCubeFace& face : makeViewCubeFaces(width(), height())) {
-        if (face.polygon.containsPoint(QPointF(point), Qt::OddEvenFill)) {
-            setStandardView(face.viewName);
-            event->accept();
-            return;
-        }
-    }
-
     if (sketchTool_ != SketchTool::None) {
         leftPressed_ = true;
         QVector3D world;
@@ -942,7 +932,6 @@ void CadViewport::mouseMoveEvent(QMouseEvent* event)
     if (navigationButton_ == Qt::MiddleButton) {
         yawDegrees_ += static_cast<float>(delta.x()) * 0.45F;
         pitchDegrees_ = std::clamp(pitchDegrees_ + static_cast<float>(delta.y()) * 0.35F, -88.0F, 88.0F);
-        currentViewName_.clear();
         update();
     } else if (navigationButton_ == Qt::RightButton) {
         const float scale = cameraDistance_ * 2.0F * std::tan(qDegreesToRadians(kFieldOfView * 0.5F)) /
