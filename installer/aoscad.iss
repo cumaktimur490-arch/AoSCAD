@@ -1,6 +1,6 @@
 #define AppName "AoSCAD Studio"
 #ifndef AppVersion
-  #define AppVersion "0.4.1"
+  #define AppVersion "0.5.0"
 #endif
 #define AppExe "aoscad-studio.exe"
 

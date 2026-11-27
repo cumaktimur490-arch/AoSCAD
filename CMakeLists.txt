@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(AoSCADStudio VERSION 0.4.1 LANGUAGES CXX)
+project(AoSCADStudio VERSION 0.5.0 LANGUAGES CXX)
 
 if(WIN32)
     enable_language(RC)
