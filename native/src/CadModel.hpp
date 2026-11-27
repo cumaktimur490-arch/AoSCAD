@@ -94,6 +94,16 @@ public:
                            std::optional<std::size_t> objectIndex = std::nullopt);
     static CadGeometryProperties analyzeShape(const TopoDS_Shape& shape);
     static TopoDS_Shape makeExtrusion(const CadObject& sketch, double lengthMm, bool symmetric = false);
+    static TopoDS_Shape makeBoolean(const TopoDS_Shape& left,
+                                    const TopoDS_Shape& right,
+                                    const QString& operation);
+    static TopoDS_Shape makeFillet(const TopoDS_Shape& shape, double radiusMm);
+    static TopoDS_Shape makeChamfer(const TopoDS_Shape& shape, double distanceMm);
+    static TopoDS_Shape makeLinearPattern(const TopoDS_Shape& shape,
+                                          const QString& axis,
+                                          int instanceCount,
+                                          double spacingMm);
+    static TopoDS_Shape makeMirror(const TopoDS_Shape& shape, const QString& plane);
     static void recomputeParametricFeatures(CadDocument& document);
     static std::vector<CadTriangle> triangulate(const TopoDS_Shape& shape,
                                                  std::size_t objectIndex = 0,

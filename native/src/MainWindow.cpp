@@ -20,6 +20,8 @@
 #include <QAbstractItemView>
 #include <QSet>
 #include <QDockWidget>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -266,6 +268,37 @@ QIcon makeRibbonIcon(const QString& name, bool darkTheme)
         polygon({QPointF(4, 13), QPointF(12, 9), QPointF(20, 13), QPointF(12, 17)}, QColor(QStringLiteral("#D9EAF6")));
         painter.drawLine(12, 14, 12, 4); painter.drawLine(12, 4, 9.5, 7); painter.drawLine(12, 4, 14.5, 7);
         painter.drawLine(4, 13, 4, 18); painter.drawLine(20, 13, 20, 18); painter.drawLine(4, 18, 12, 22); painter.drawLine(20, 18, 12, 22);
+    } else if (name == QStringLiteral("fillet")) {
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRoundedRect(QRectF(4, 4, 16, 16), 4, 4);
+        painter.drawArc(QRectF(7, 7, 10, 10), 0, 90 * 16);
+    } else if (name == QStringLiteral("chamfer")) {
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(QRectF(4, 4, 16, 16));
+        painter.drawLine(15, 4, 20, 9); painter.drawLine(15, 4, 15, 9); painter.drawLine(15, 9, 20, 9);
+    } else if (name == QStringLiteral("union") || name == QStringLiteral("cut") || name == QStringLiteral("common")) {
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRoundedRect(QRectF(3, 5, 12, 14), 2, 2);
+        painter.drawRoundedRect(QRectF(9, 5, 12, 14), 2, 2);
+        if (name == QStringLiteral("union")) {
+            painter.drawLine(8, 5, 8, 19); painter.drawLine(16, 5, 16, 19);
+        } else if (name == QStringLiteral("cut")) {
+            painter.drawLine(9, 5, 9, 19);
+        } else {
+            painter.drawLine(11, 5, 11, 19); painter.drawLine(13, 5, 13, 19);
+        }
+    } else if (name == QStringLiteral("pattern")) {
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(QRectF(2.5, 8, 6, 8));
+        painter.drawRect(QRectF(9, 8, 6, 8));
+        painter.drawRect(QRectF(15.5, 8, 6, 8));
+        painter.drawLine(4, 5, 20, 5); painter.drawLine(17, 3, 20, 5); painter.drawLine(17, 7, 20, 5);
+    } else if (name == QStringLiteral("mirror")) {
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(QRectF(2, 7, 7, 10)); painter.drawRect(QRectF(15, 7, 7, 10));
+        const QPen mirrorPen = painter.pen();
+        painter.setPen(QPen(mirrorPen.color(), mirrorPen.widthF(), Qt::DashLine));
+        painter.drawLine(12, 3, 12, 21);
     } else if (name == QStringLiteral("fit")) {
         painter.setBrush(Qt::NoBrush);
         painter.drawLine(4, 9, 4, 4); painter.drawLine(4, 4, 9, 4);
@@ -754,32 +787,13 @@ void MainWindow::createInspectorDock()
     connect(editExtrudeButton_, &QPushButton::clicked, this, [this] { beginExtrudeEditForSelectedFeature(); });
     for (int axis = 0; axis < 3; ++axis) {
         connect(positionFields_[static_cast<std::size_t>(axis)], qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, axis](double value) {
-            const int index = selectedIndex();
-            if (syncingInspector_ || index < 0) return;
-            CadObject& object = document_.objects[static_cast<std::size_t>(index)];
-            object.position[axis] = static_cast<float>(value / unitFactor());
-            viewport_->refreshGeometry();
-            updateTree();
-            if (!pendingExtrudeSketchId_.isEmpty())
-                updateExtrudePreview();
+            updateObjectTransform(axis, value, 0);
         });
         connect(rotationFields_[static_cast<std::size_t>(axis)], qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, axis](double value) {
-            const int index = selectedIndex();
-            if (syncingInspector_ || index < 0) return;
-            document_.objects[static_cast<std::size_t>(index)].rotation[axis] = static_cast<float>(value);
-            viewport_->refreshGeometry();
-            updateTree();
-            if (!pendingExtrudeSketchId_.isEmpty())
-                updateExtrudePreview();
+            updateObjectTransform(axis, value, 1);
         });
         connect(scaleFields_[static_cast<std::size_t>(axis)], qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, axis](double value) {
-            const int index = selectedIndex();
-            if (syncingInspector_ || index < 0) return;
-            document_.objects[static_cast<std::size_t>(index)].scale[axis] = static_cast<float>(std::max(0.001, value));
-            viewport_->refreshGeometry();
-            updateTree();
-            if (!pendingExtrudeSketchId_.isEmpty())
-                updateExtrudePreview();
+            updateObjectTransform(axis, value, 2);
         });
         connect(positionFields_[static_cast<std::size_t>(axis)], &QDoubleSpinBox::editingFinished, this, [this] { if (!syncingInspector_) pushHistory(); });
         connect(rotationFields_[static_cast<std::size_t>(axis)], &QDoubleSpinBox::editingFinished, this, [this] { if (!syncingInspector_) pushHistory(); });
@@ -907,6 +921,21 @@ void MainWindow::createMenusAndRibbon()
     QAction* rectangleSketchAction = sketchMenu->addAction(QStringLiteral("Прямоугольник"));
     QAction* circleSketchAction = sketchMenu->addAction(QStringLiteral("Окружность"));
     QAction* extrudeAction = modelingMenu->addAction(QStringLiteral("Выдавливание…"));
+    modelingMenu->addSeparator();
+    QAction* filletAction = modelingMenu->addAction(QStringLiteral("Скруглить все рёбра…"));
+    QAction* chamferAction = modelingMenu->addAction(QStringLiteral("Снять фаску со всех рёбер…"));
+    auto* booleanMenu = modelingMenu->addMenu(QStringLiteral("Булевы операции"));
+    QAction* booleanUnionAction = booleanMenu->addAction(QStringLiteral("Объединение тел…"));
+    QAction* booleanCutAction = booleanMenu->addAction(QStringLiteral("Вычитание тел…"));
+    QAction* booleanCommonAction = booleanMenu->addAction(QStringLiteral("Пересечение тел…"));
+    auto* patternMenu = modelingMenu->addMenu(QStringLiteral("Линейный массив"));
+    QAction* patternXAction = patternMenu->addAction(QStringLiteral("По оси X…"));
+    QAction* patternYAction = patternMenu->addAction(QStringLiteral("По оси Y…"));
+    QAction* patternZAction = patternMenu->addAction(QStringLiteral("По оси Z…"));
+    auto* mirrorMenu = modelingMenu->addMenu(QStringLiteral("Зеркальная копия"));
+    QAction* mirrorXYAction = mirrorMenu->addAction(QStringLiteral("Относительно XY"));
+    QAction* mirrorYZAction = mirrorMenu->addAction(QStringLiteral("Относительно YZ"));
+    QAction* mirrorZXAction = mirrorMenu->addAction(QStringLiteral("Относительно ZX"));
 
     QAction* fitAction = viewMenu->addAction(QStringLiteral("Вписать модель"));
     fitAction->setShortcut(QKeySequence(QStringLiteral("F")));
@@ -962,6 +991,13 @@ void MainWindow::createMenusAndRibbon()
     setRibbonIcon(rectangleSketchAction, QStringLiteral("rectangle"), QStringLiteral("Прямоугольник"));
     setRibbonIcon(circleSketchAction, QStringLiteral("circle"), QStringLiteral("Окружность"));
     setRibbonIcon(extrudeAction, QStringLiteral("extrude"), QStringLiteral("Выдавить"));
+    setRibbonIcon(filletAction, QStringLiteral("fillet"), QStringLiteral("Скруглить"));
+    setRibbonIcon(chamferAction, QStringLiteral("chamfer"), QStringLiteral("Фаска"));
+    setRibbonIcon(booleanUnionAction, QStringLiteral("union"), QStringLiteral("Объединить"));
+    setRibbonIcon(booleanCutAction, QStringLiteral("cut"), QStringLiteral("Вычесть"));
+    setRibbonIcon(booleanCommonAction, QStringLiteral("common"), QStringLiteral("Пересечь"));
+    setRibbonIcon(patternXAction, QStringLiteral("pattern"), QStringLiteral("Массив X"));
+    setRibbonIcon(mirrorXYAction, QStringLiteral("mirror"), QStringLiteral("Зеркало XY"));
     setRibbonIcon(fitAction, QStringLiteral("fit"), QStringLiteral("Вписать"));
     setRibbonIcon(gridAction, QStringLiteral("grid"), QStringLiteral("Сетка"));
     setRibbonIcon(isoAction, QStringLiteral("iso"), QStringLiteral("Изометрия"));
@@ -1037,6 +1073,13 @@ void MainWindow::createMenusAndRibbon()
     QWidget* transformPage = createRibbonPage(QStringLiteral("Преобразования"), transformLayout);
     addRibbonGroup(transformPage, transformLayout, QStringLiteral("Инструменты"),
                    {selectAction, moveAction, rotateAction, scaleAction, measureAction});
+    addRibbonSeparator(transformPage, transformLayout);
+    addRibbonGroup(transformPage, transformLayout, QStringLiteral("Обработка рёбер"), {filletAction, chamferAction});
+    addRibbonSeparator(transformPage, transformLayout);
+    addRibbonGroup(transformPage, transformLayout, QStringLiteral("Булевы операции"),
+                   {booleanUnionAction, booleanCutAction, booleanCommonAction});
+    addRibbonSeparator(transformPage, transformLayout);
+    addRibbonGroup(transformPage, transformLayout, QStringLiteral("Копирование"), {patternXAction, mirrorXYAction});
     transformLayout->addStretch(1);
 
     QHBoxLayout* viewLayout = nullptr;
@@ -1069,6 +1112,17 @@ void MainWindow::createMenusAndRibbon()
     connect(rectangleSketchAction, &QAction::triggered, this, [this] { startSketch(CadViewport::SketchTool::Rectangle); });
     connect(circleSketchAction, &QAction::triggered, this, [this] { startSketch(CadViewport::SketchTool::Circle); });
     connect(extrudeAction, &QAction::triggered, this, [this] { beginExtrudeForSelectedSketch(); });
+    connect(filletAction, &QAction::triggered, this, [this] { createEdgeTreatmentFeature(false); });
+    connect(chamferAction, &QAction::triggered, this, [this] { createEdgeTreatmentFeature(true); });
+    connect(booleanUnionAction, &QAction::triggered, this, [this] { createBooleanFeature(QStringLiteral("union")); });
+    connect(booleanCutAction, &QAction::triggered, this, [this] { createBooleanFeature(QStringLiteral("cut")); });
+    connect(booleanCommonAction, &QAction::triggered, this, [this] { createBooleanFeature(QStringLiteral("common")); });
+    connect(patternXAction, &QAction::triggered, this, [this] { createLinearPatternFeature(QStringLiteral("X")); });
+    connect(patternYAction, &QAction::triggered, this, [this] { createLinearPatternFeature(QStringLiteral("Y")); });
+    connect(patternZAction, &QAction::triggered, this, [this] { createLinearPatternFeature(QStringLiteral("Z")); });
+    connect(mirrorXYAction, &QAction::triggered, this, [this] { createMirrorFeature(QStringLiteral("XY")); });
+    connect(mirrorYZAction, &QAction::triggered, this, [this] { createMirrorFeature(QStringLiteral("YZ")); });
+    connect(mirrorZXAction, &QAction::triggered, this, [this] { createMirrorFeature(QStringLiteral("ZX")); });
     connect(fitAction, &QAction::triggered, viewport_, &CadViewport::fitAll);
     connect(gridAction, &QAction::toggled, viewport_, &CadViewport::setGridVisible);
     connect(darkThemeAction_, &QAction::triggered, this, [this] { applyTheme(true); });
@@ -1118,6 +1172,35 @@ void MainWindow::connectActions()
         updateInspector();
     });
     connect(viewport_, &CadViewport::objectChanged, this, [this](bool committed) {
+        if (committed) {
+            const int selectedBeforeRecompute = selectedIndex();
+            try {
+                CadDocument candidate = document_;
+                CadIO::recomputeParametricFeatures(candidate);
+                document_ = std::move(candidate);
+                viewport_->refreshGeometry();
+                if (!pendingExtrudeSketchId_.isEmpty())
+                    updateExtrudePreview();
+            } catch (const Standard_Failure& error) {
+                if (historyIndex_ >= 0 && historyIndex_ < static_cast<int>(history_.size()))
+                    document_ = history_[static_cast<std::size_t>(historyIndex_)];
+                viewport_->setDocument(&document_);
+                viewport_->setSelectedObject(selectedBeforeRecompute);
+                updateTree();
+                updateInspector();
+                statusBar()->showMessage(QString::fromLocal8Bit(error.GetMessageString()), 6000);
+                return;
+            } catch (const std::exception& error) {
+                if (historyIndex_ >= 0 && historyIndex_ < static_cast<int>(history_.size()))
+                    document_ = history_[static_cast<std::size_t>(historyIndex_)];
+                viewport_->setDocument(&document_);
+                viewport_->setSelectedObject(selectedBeforeRecompute);
+                updateTree();
+                updateInspector();
+                statusBar()->showMessage(QString::fromUtf8(error.what()), 6000);
+                return;
+            }
+        }
         updateTree();
         updateInspector(committed);
         if (committed)
@@ -1503,6 +1586,42 @@ QString MainWindow::uniqueName(const QString& base) const
     return base;
 }
 
+void MainWindow::updateObjectTransform(int axis, double value, int transformType)
+{
+    if (syncingInspector_ || axis < 0 || axis > 2)
+        return;
+    const int index = selectedIndex();
+    if (index < 0 || static_cast<std::size_t>(index) >= document_.objects.size())
+        return;
+
+    try {
+        CadDocument candidate = document_;
+        CadObject& object = candidate.objects[static_cast<std::size_t>(index)];
+        if (transformType == 0)
+            object.position[axis] = static_cast<float>(value / unitFactor());
+        else if (transformType == 1)
+            object.rotation[axis] = static_cast<float>(value);
+        else if (transformType == 2)
+            object.scale[axis] = static_cast<float>(std::max(0.001, value));
+        else
+            return;
+
+        CadIO::recomputeParametricFeatures(candidate);
+        document_ = std::move(candidate);
+        viewport_->refreshGeometry();
+        updateTree();
+        updatePhysicalInspector(document_.objects[static_cast<std::size_t>(index)]);
+        if (!pendingExtrudeSketchId_.isEmpty())
+            updateExtrudePreview();
+    } catch (const Standard_Failure& error) {
+        updateInspector();
+        statusBar()->showMessage(QString::fromLocal8Bit(error.GetMessageString()), 5000);
+    } catch (const std::exception& error) {
+        updateInspector();
+        statusBar()->showMessage(QString::fromUtf8(error.what()), 5000);
+    }
+}
+
 void MainWindow::addPrimitive(const QString& kind)
 {
     CadObject object;
@@ -1550,7 +1669,12 @@ void MainWindow::editPrimitiveParameters()
     if (index < 0 || static_cast<std::size_t>(index) >= document_.objects.size())
         return;
     const CadObject& selected = document_.objects[static_cast<std::size_t>(index)];
-    if (selected.featureType != QStringLiteral("primitive") && selected.featureType != QStringLiteral("sketch"))
+    const bool hasEditableParameters = selected.featureType == QStringLiteral("primitive") ||
+        selected.featureType == QStringLiteral("sketch") ||
+        selected.featureType == QStringLiteral("fillet") ||
+        selected.featureType == QStringLiteral("chamfer") ||
+        selected.featureType == QStringLiteral("pattern");
+    if (!hasEditableParameters)
         return;
     const int parameterCount = primitiveParameterCount(selected.primitiveType);
     if (parameterCount <= 0 || parameterCount != static_cast<int>(selected.primitiveParameters.size()))
@@ -1587,6 +1711,335 @@ void MainWindow::editPrimitiveParameters()
         for (QLineEdit* field : primitiveFields_)
             field->setStyleSheet(QStringLiteral("border:1px solid #d86464;"));
         statusBar()->showMessage(QString::fromUtf8(error.what()), 5000);
+    }
+}
+
+void MainWindow::createBooleanFeature(const QString& operation)
+{
+    QString title;
+    QString resultName;
+    if (operation == QStringLiteral("union")) {
+        title = QStringLiteral("Объединение тел");
+        resultName = QStringLiteral("Объединение");
+    } else if (operation == QStringLiteral("cut")) {
+        title = QStringLiteral("Вычитание тел");
+        resultName = QStringLiteral("Вычитание");
+    } else if (operation == QStringLiteral("common")) {
+        title = QStringLiteral("Пересечение тел");
+        resultName = QStringLiteral("Пересечение");
+    } else {
+        statusBar()->showMessage(QStringLiteral("Неизвестная булева операция."), 4000);
+        return;
+    }
+
+    std::vector<int> eligibleObjects;
+    try {
+        for (std::size_t i = 0; i < document_.objects.size(); ++i) {
+            const CadObject& object = document_.objects[i];
+            if (!object.visible || object.suppressed || object.featureType == QStringLiteral("sketch"))
+                continue;
+            if (CadIO::analyzeShape(object.worldShape()).hasVolume)
+                eligibleObjects.push_back(static_cast<int>(i));
+        }
+    } catch (const Standard_Failure& error) {
+        statusBar()->showMessage(QString::fromLocal8Bit(error.GetMessageString()), 5000);
+        return;
+    } catch (const std::exception& error) {
+        statusBar()->showMessage(QString::fromUtf8(error.what()), 5000);
+        return;
+    }
+
+    if (eligibleObjects.size() < 2) {
+        statusBar()->showMessage(QStringLiteral("Для булевой операции нужны два видимых тела с объёмом."), 4500);
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(title);
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* form = new QFormLayout;
+    auto* baseCombo = new QComboBox(&dialog);
+    auto* toolCombo = new QComboBox(&dialog);
+    for (const int index : eligibleObjects) {
+        const CadObject& object = document_.objects[static_cast<std::size_t>(index)];
+        const QString label = QStringLiteral("%1  [%2]").arg(object.name).arg(index + 1);
+        baseCombo->addItem(label, object.id);
+        toolCombo->addItem(label, object.id);
+    }
+    form->addRow(QStringLiteral("Основание"), baseCombo);
+    form->addRow(QStringLiteral("Инструмент"), toolCombo);
+    layout->addLayout(form);
+    auto* hint = new QLabel(QStringLiteral("Для вычитания используется порядок: основание минус инструмент. Исходные тела останутся в дереве, но будут скрыты."), &dialog);
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    const int selected = selectedIndex();
+    for (int i = 0; i < baseCombo->count(); ++i) {
+        const int documentIndex = eligibleObjects[static_cast<std::size_t>(i)];
+        if (documentIndex == selected) {
+            baseCombo->setCurrentIndex(i);
+            break;
+        }
+    }
+    int firstDifferent = 0;
+    for (int i = 0; i < toolCombo->count(); ++i) {
+        if (toolCombo->itemData(i).toString() != baseCombo->currentData().toString()) {
+            firstDifferent = i;
+            break;
+        }
+    }
+    toolCombo->setCurrentIndex(firstDifferent);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString baseId = baseCombo->currentData().toString();
+    const QString toolId = toolCombo->currentData().toString();
+    if (baseId.isEmpty() || toolId.isEmpty() || baseId == toolId) {
+        QMessageBox::warning(this, title, QStringLiteral("Основание и инструмент должны быть разными телами."));
+        return;
+    }
+
+    try {
+        CadDocument candidate = document_;
+        const auto baseIt = std::find_if(candidate.objects.begin(), candidate.objects.end(), [&baseId](const CadObject& object) {
+            return object.id == baseId;
+        });
+        const auto toolIt = std::find_if(candidate.objects.begin(), candidate.objects.end(), [&toolId](const CadObject& object) {
+            return object.id == toolId;
+        });
+        if (baseIt == candidate.objects.end() || toolIt == candidate.objects.end())
+            throw CadError(QStringLiteral("Одно из выбранных тел больше не существует."));
+
+        CadObject feature;
+        feature.id = cadNewId();
+        feature.name = uniqueName(resultName);
+        feature.featureType = QStringLiteral("boolean");
+        feature.primitiveType = operation;
+        feature.inputs = {baseId, toolId};
+        feature.color = baseIt->color;
+        feature.materialId = baseIt->materialId;
+        baseIt->visible = false;
+        toolIt->visible = false;
+        candidate.objects.push_back(std::move(feature));
+        const QString resultId = candidate.objects.back().id;
+        CadIO::recomputeParametricFeatures(candidate);
+        document_ = std::move(candidate);
+
+        int resultIndex = -1;
+        for (std::size_t i = 0; i < document_.objects.size(); ++i) {
+            if (document_.objects[i].id == resultId) {
+                resultIndex = static_cast<int>(i);
+                break;
+            }
+        }
+        viewport_->setSelectedObject(resultIndex);
+        refreshViewport();
+        pushHistory();
+        viewport_->fitAll();
+        statusBar()->showMessage(QStringLiteral("%1 построено и добавлено в дерево фич.").arg(title), 4000);
+    } catch (const Standard_Failure& error) {
+        statusBar()->showMessage(QString::fromLocal8Bit(error.GetMessageString()), 6000);
+    } catch (const std::exception& error) {
+        statusBar()->showMessage(QString::fromUtf8(error.what()), 6000);
+    }
+}
+
+void MainWindow::createEdgeTreatmentFeature(bool chamfer)
+{
+    const int index = selectedIndex();
+    if (index < 0 || static_cast<std::size_t>(index) >= document_.objects.size()) {
+        statusBar()->showMessage(QStringLiteral("Сначала выберите тело для редактирования."), 4000);
+        return;
+    }
+
+    const CadObject& selected = document_.objects[static_cast<std::size_t>(index)];
+    const QString operationName = chamfer ? QStringLiteral("Фаска") : QStringLiteral("Скругление");
+    try {
+        const CadGeometryProperties properties = CadIO::analyzeShape(selected.worldShape());
+        if (!properties.hasVolume) {
+            statusBar()->showMessage(QStringLiteral("%1 требует замкнутое тело с объёмом; эскизы и открытые поверхности не подходят.").arg(operationName), 5000);
+            return;
+        }
+        const float minExtent = std::min({properties.boundsMm.x(), properties.boundsMm.y(), properties.boundsMm.z()});
+        const double suggestedSize = std::max(0.001, std::min(1.0, static_cast<double>(minExtent) * 0.05));
+        bool accepted = false;
+        const double size = QInputDialog::getDouble(
+            this,
+            chamfer ? QStringLiteral("Фаска всех рёбер") : QStringLiteral("Скругление всех рёбер"),
+            chamfer ? QStringLiteral("Размер фаски для всех рёбер · мм")
+                    : QStringLiteral("Радиус скругления для всех рёбер · мм"),
+            suggestedSize, 0.001, 1000000.0, 3, &accepted);
+        if (!accepted)
+            return;
+
+        CadDocument candidate = document_;
+        CadObject& source = candidate.objects[static_cast<std::size_t>(index)];
+        CadObject feature;
+        feature.id = cadNewId();
+        feature.name = uniqueName(chamfer ? QStringLiteral("Фаска") : QStringLiteral("Скругление"));
+        feature.featureType = chamfer ? QStringLiteral("chamfer") : QStringLiteral("fillet");
+        feature.primitiveType = feature.featureType;
+        feature.inputs = {source.id};
+        feature.primitiveParameters = {size};
+        feature.parameterExpressions.insert(QStringLiteral("p0"), QString::number(size, 'g', 15));
+        feature.color = source.color;
+        feature.materialId = source.materialId;
+        source.visible = false;
+        candidate.objects.push_back(std::move(feature));
+        const QString resultId = candidate.objects.back().id;
+        CadIO::recomputeParametricFeatures(candidate);
+        document_ = std::move(candidate);
+
+        int resultIndex = -1;
+        for (std::size_t i = 0; i < document_.objects.size(); ++i) {
+            if (document_.objects[i].id == resultId) {
+                resultIndex = static_cast<int>(i);
+                break;
+            }
+        }
+        viewport_->setSelectedObject(resultIndex);
+        refreshViewport();
+        pushHistory();
+        statusBar()->showMessage(QStringLiteral("%1 всех рёбер выполнено. Размер можно изменить в инспекторе.").arg(operationName), 5000);
+    } catch (const Standard_Failure& error) {
+        statusBar()->showMessage(QString::fromLocal8Bit(error.GetMessageString()), 6000);
+    } catch (const std::exception& error) {
+        statusBar()->showMessage(QString::fromUtf8(error.what()), 6000);
+    }
+}
+
+void MainWindow::createLinearPatternFeature(const QString& axis)
+{
+    const int index = selectedIndex();
+    if (index < 0 || static_cast<std::size_t>(index) >= document_.objects.size()) {
+        statusBar()->showMessage(QStringLiteral("Сначала выберите тело для массива."), 4000);
+        return;
+    }
+
+    const QString normalizedAxis = axis.trimmed().toUpper();
+    if (normalizedAxis != QStringLiteral("X") && normalizedAxis != QStringLiteral("Y") && normalizedAxis != QStringLiteral("Z")) {
+        statusBar()->showMessage(QStringLiteral("Ось массива должна быть X, Y или Z."), 4000);
+        return;
+    }
+
+    try {
+        const CadObject& selected = document_.objects[static_cast<std::size_t>(index)];
+        const CadGeometryProperties properties = CadIO::analyzeShape(selected.worldShape());
+        if (!properties.hasVolume) {
+            statusBar()->showMessage(QStringLiteral("Линейный массив доступен только для тела с объёмом."), 5000);
+            return;
+        }
+        bool accepted = false;
+        const int instanceCount = QInputDialog::getInt(
+            this, QStringLiteral("Линейный массив"), QStringLiteral("Количество экземпляров (включая исходное тело)"),
+            3, 2, 100, 1, &accepted);
+        if (!accepted)
+            return;
+
+        const int axisIndex = normalizedAxis == QStringLiteral("X") ? 0 : normalizedAxis == QStringLiteral("Y") ? 1 : 2;
+        const double extent = std::max(0.001, static_cast<double>(properties.boundsMm[axisIndex]));
+        const double suggestedSpacing = std::min(1000000.0, std::max(0.001, extent * 1.2));
+        const double spacing = QInputDialog::getDouble(
+            this, QStringLiteral("Линейный массив"), QStringLiteral("Шаг вдоль оси %1 · мм").arg(normalizedAxis),
+            suggestedSpacing, 0.001, 1000000.0, 3, &accepted);
+        if (!accepted)
+            return;
+
+        CadDocument candidate = document_;
+        CadObject& source = candidate.objects[static_cast<std::size_t>(index)];
+        CadObject feature;
+        feature.id = cadNewId();
+        feature.name = uniqueName(QStringLiteral("Линейный массив %1").arg(normalizedAxis));
+        feature.featureType = QStringLiteral("pattern");
+        feature.primitiveType = QStringLiteral("linear-pattern-%1").arg(normalizedAxis.toLower());
+        feature.inputs = {source.id};
+        feature.primitiveParameters = {static_cast<double>(instanceCount), spacing};
+        feature.parameterExpressions.insert(QStringLiteral("p0"), QString::number(instanceCount));
+        feature.parameterExpressions.insert(QStringLiteral("p1"), QString::number(spacing, 'g', 15));
+        feature.color = source.color;
+        feature.materialId = source.materialId;
+        source.visible = false;
+        candidate.objects.push_back(std::move(feature));
+        const QString resultId = candidate.objects.back().id;
+        CadIO::recomputeParametricFeatures(candidate);
+        document_ = std::move(candidate);
+
+        int resultIndex = -1;
+        for (std::size_t i = 0; i < document_.objects.size(); ++i) {
+            if (document_.objects[i].id == resultId) {
+                resultIndex = static_cast<int>(i);
+                break;
+            }
+        }
+        viewport_->setSelectedObject(resultIndex);
+        refreshViewport();
+        pushHistory();
+        viewport_->fitAll();
+        statusBar()->showMessage(QStringLiteral("Линейный массив по оси %1 создан: %2 экземпляра(ов).")
+                                     .arg(normalizedAxis).arg(instanceCount), 5000);
+    } catch (const Standard_Failure& error) {
+        statusBar()->showMessage(QString::fromLocal8Bit(error.GetMessageString()), 6000);
+    } catch (const std::exception& error) {
+        statusBar()->showMessage(QString::fromUtf8(error.what()), 6000);
+    }
+}
+
+void MainWindow::createMirrorFeature(const QString& plane)
+{
+    const int index = selectedIndex();
+    if (index < 0 || static_cast<std::size_t>(index) >= document_.objects.size()) {
+        statusBar()->showMessage(QStringLiteral("Сначала выберите тело для зеркального отражения."), 4000);
+        return;
+    }
+
+    const QString normalizedPlane = plane.trimmed().toUpper();
+    if (normalizedPlane != QStringLiteral("XY") && normalizedPlane != QStringLiteral("YZ") &&
+        normalizedPlane != QStringLiteral("ZX")) {
+        statusBar()->showMessage(QStringLiteral("Плоскость зеркального отражения должна быть XY, YZ или ZX."), 4000);
+        return;
+    }
+
+    try {
+        CadDocument candidate = document_;
+        CadObject& source = candidate.objects[static_cast<std::size_t>(index)];
+        if (!CadIO::analyzeShape(source.worldShape()).hasVolume) {
+            statusBar()->showMessage(QStringLiteral("Зеркальное отражение доступно только для тела с объёмом."), 5000);
+            return;
+        }
+        CadObject feature;
+        feature.id = cadNewId();
+        feature.name = uniqueName(QStringLiteral("Зеркальная копия %1").arg(normalizedPlane));
+        feature.featureType = QStringLiteral("mirror");
+        feature.primitiveType = QStringLiteral("mirror-%1").arg(normalizedPlane.toLower());
+        feature.inputs = {source.id};
+        feature.color = source.color;
+        feature.materialId = source.materialId;
+        source.visible = false;
+        candidate.objects.push_back(std::move(feature));
+        const QString resultId = candidate.objects.back().id;
+        CadIO::recomputeParametricFeatures(candidate);
+        document_ = std::move(candidate);
+
+        int resultIndex = -1;
+        for (std::size_t i = 0; i < document_.objects.size(); ++i) {
+            if (document_.objects[i].id == resultId) {
+                resultIndex = static_cast<int>(i);
+                break;
+            }
+        }
+        viewport_->setSelectedObject(resultIndex);
+        refreshViewport();
+        pushHistory();
+        viewport_->fitAll();
+        statusBar()->showMessage(QStringLiteral("Зеркальная копия относительно %1 создана.").arg(normalizedPlane), 4500);
+    } catch (const Standard_Failure& error) {
+        statusBar()->showMessage(QString::fromLocal8Bit(error.GetMessageString()), 6000);
+    } catch (const std::exception& error) {
+        statusBar()->showMessage(QString::fromUtf8(error.what()), 6000);
     }
 }
 

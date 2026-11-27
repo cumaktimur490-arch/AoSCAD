@@ -99,8 +99,13 @@ private:
     int selectedIndex() const;
     double unitFactor() const;
     QString uniqueName(const QString& base) const;
+    void updateObjectTransform(int axis, double value, int transformType);
     void addPrimitive(const QString& kind);
     void editPrimitiveParameters();
+    void createBooleanFeature(const QString& operation);
+    void createEdgeTreatmentFeature(bool chamfer);
+    void createLinearPatternFeature(const QString& axis);
+    void createMirrorFeature(const QString& plane);
     void startSketch(CadViewport::SketchTool tool);
     void createSketch(const QString& profileType, const QVector2D& origin, const QVector2D& size);
     void beginExtrudeForSelectedSketch();

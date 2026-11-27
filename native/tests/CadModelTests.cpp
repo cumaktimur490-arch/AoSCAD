@@ -55,6 +55,18 @@ CadDocument makeParametricDocument()
     document.objects = {sketch, extrude};
     return document;
 }
+
+CadObject makeBoxObject(const QString& name, const std::vector<double>& dimensions, const QVector3D& position)
+{
+    CadObject object;
+    object.id = cadNewId();
+    object.name = name;
+    object.featureType = QStringLiteral("primitive");
+    object.primitiveType = QStringLiteral("box");
+    object.setPrimitiveParameters(dimensions);
+    object.position = position;
+    return object;
+}
 } // namespace
 
 int main(int argc, char** argv)
@@ -79,6 +91,137 @@ int main(int argc, char** argv)
         const CadGeometryProperties symmetricProperties = CadIO::analyzeShape(symmetric);
         require(symmetricProperties.hasVolume && near(symmetricProperties.volumeMm3, 18000.0),
                 "symmetric extrude volume is incorrect");
+
+        CadObject booleanBase = makeBoxObject(QStringLiteral("Base"), {10.0, 10.0, 10.0}, QVector3D(0, 0, 0));
+        CadObject booleanTool = makeBoxObject(QStringLiteral("Tool"), {10.0, 10.0, 10.0}, QVector3D(5, 0, 0));
+        CadObject unionFeature;
+        unionFeature.id = cadNewId();
+        unionFeature.name = QStringLiteral("Union");
+        unionFeature.featureType = QStringLiteral("boolean");
+        unionFeature.primitiveType = QStringLiteral("union");
+        unionFeature.inputs = {booleanBase.id, booleanTool.id};
+        CadObject cutFeature;
+        cutFeature.id = cadNewId();
+        cutFeature.name = QStringLiteral("Cut");
+        cutFeature.featureType = QStringLiteral("boolean");
+        cutFeature.primitiveType = QStringLiteral("cut");
+        cutFeature.inputs = {booleanBase.id, booleanTool.id};
+        CadObject commonFeature;
+        commonFeature.id = cadNewId();
+        commonFeature.name = QStringLiteral("Common");
+        commonFeature.featureType = QStringLiteral("boolean");
+        commonFeature.primitiveType = QStringLiteral("common");
+        commonFeature.inputs = {booleanBase.id, booleanTool.id};
+        CadDocument booleanDocument;
+        booleanDocument.objects = {booleanBase, booleanTool, unionFeature, cutFeature, commonFeature};
+        CadIO::recomputeParametricFeatures(booleanDocument);
+        require(near(CadIO::analyzeShape(booleanDocument.objects[2].shape).volumeMm3, 1500.0),
+                "boolean union volume is incorrect");
+        require(near(CadIO::analyzeShape(booleanDocument.objects[3].shape).volumeMm3, 500.0),
+                "boolean cut volume is incorrect");
+        require(near(CadIO::analyzeShape(booleanDocument.objects[4].shape).volumeMm3, 500.0),
+                "boolean common volume is incorrect");
+        booleanDocument.objects[1].position.setX(3.0F);
+        CadIO::recomputeParametricFeatures(booleanDocument);
+        require(near(CadIO::analyzeShape(booleanDocument.objects[2].shape).volumeMm3, 1300.0),
+                "boolean feature did not update when its input transform changed");
+        require(near(CadIO::analyzeShape(booleanDocument.objects[4].shape).volumeMm3, 700.0),
+                "boolean intersection did not update when its input transform changed");
+        CadDocument failedBooleanDocument = booleanDocument;
+        failedBooleanDocument.objects[1].position.setX(20.0F);
+        bool emptyIntersectionRejected = false;
+        try {
+            CadIO::recomputeParametricFeatures(failedBooleanDocument);
+        } catch (const Standard_Failure&) {
+            emptyIntersectionRejected = true;
+        } catch (const std::exception&) {
+            emptyIntersectionRejected = true;
+        }
+        require(emptyIntersectionRejected, "empty boolean intersection was not rejected");
+        require(near(CadIO::analyzeShape(failedBooleanDocument.objects[4].shape).volumeMm3, 700.0),
+                "failed boolean recompute partially replaced the previous valid result");
+
+        const CadObject edgeTreatmentBase = makeBoxObject(QStringLiteral("Edge treatment base"),
+                                                           {30.0, 20.0, 10.0}, QVector3D(0, 0, 0));
+        const double originalBoxVolume = CadIO::analyzeShape(edgeTreatmentBase.shape).volumeMm3;
+        const TopoDS_Shape filletedBox = CadIO::makeFillet(edgeTreatmentBase.shape, 0.5);
+        const TopoDS_Shape chamferedBox = CadIO::makeChamfer(edgeTreatmentBase.shape, 0.5);
+        const double filletedVolume = CadIO::analyzeShape(filletedBox).volumeMm3;
+        const double chamferedVolume = CadIO::analyzeShape(chamferedBox).volumeMm3;
+        require(filletedVolume > 0.0 && filletedVolume < originalBoxVolume,
+                "all-edge fillet did not create a valid, smaller solid");
+        require(chamferedVolume > 0.0 && chamferedVolume < originalBoxVolume,
+                "all-edge chamfer did not create a valid, smaller solid");
+
+        CadObject filletFeature;
+        filletFeature.id = cadNewId();
+        filletFeature.name = QStringLiteral("Parametric fillet");
+        filletFeature.featureType = QStringLiteral("fillet");
+        filletFeature.primitiveType = QStringLiteral("fillet");
+        filletFeature.inputs = {edgeTreatmentBase.id};
+        filletFeature.primitiveParameters = {0.5};
+        filletFeature.parameterExpressions.insert(QStringLiteral("p0"), QStringLiteral("R"));
+        CadObject chamferFeature;
+        chamferFeature.id = cadNewId();
+        chamferFeature.name = QStringLiteral("Parametric chamfer");
+        chamferFeature.featureType = QStringLiteral("chamfer");
+        chamferFeature.primitiveType = QStringLiteral("chamfer");
+        chamferFeature.inputs = {edgeTreatmentBase.id};
+        chamferFeature.primitiveParameters = {0.5};
+        chamferFeature.parameterExpressions.insert(QStringLiteral("p0"), QStringLiteral("0.5"));
+        CadDocument edgeTreatmentDocument;
+        edgeTreatmentDocument.variables.insert(QStringLiteral("R"), QStringLiteral("0.5"));
+        edgeTreatmentDocument.objects = {edgeTreatmentBase, filletFeature, chamferFeature};
+        CadIO::recomputeParametricFeatures(edgeTreatmentDocument);
+        require(near(CadIO::analyzeShape(edgeTreatmentDocument.objects[1].shape).volumeMm3, filletedVolume),
+                "parametric fillet feature did not match the kernel result");
+        require(near(CadIO::analyzeShape(edgeTreatmentDocument.objects[2].shape).volumeMm3, chamferedVolume),
+                "parametric chamfer feature did not match the kernel result");
+
+        CadObject patternBase = makeBoxObject(QStringLiteral("Pattern source"),
+                                               {10.0, 10.0, 10.0}, QVector3D(2, 0, 0));
+        CadObject linearPattern;
+        linearPattern.id = cadNewId();
+        linearPattern.name = QStringLiteral("Linear pattern");
+        linearPattern.featureType = QStringLiteral("pattern");
+        linearPattern.primitiveType = QStringLiteral("linear-pattern-x");
+        linearPattern.inputs = {patternBase.id};
+        linearPattern.primitiveParameters = {3.0, 20.0};
+        linearPattern.parameterExpressions.insert(QStringLiteral("p0"), QStringLiteral("Copies"));
+        linearPattern.parameterExpressions.insert(QStringLiteral("p1"), QStringLiteral("20"));
+        CadObject mirrorFeature;
+        mirrorFeature.id = cadNewId();
+        mirrorFeature.name = QStringLiteral("Mirror copy");
+        mirrorFeature.featureType = QStringLiteral("mirror");
+        mirrorFeature.primitiveType = QStringLiteral("mirror-yz");
+        mirrorFeature.inputs = {patternBase.id};
+        CadDocument patternDocument;
+        patternDocument.variables.insert(QStringLiteral("Copies"), QStringLiteral("3"));
+        patternDocument.objects = {patternBase, linearPattern, mirrorFeature};
+        CadIO::recomputeParametricFeatures(patternDocument);
+        const CadGeometryProperties patternProperties = CadIO::analyzeShape(patternDocument.objects[1].shape);
+        const CadGeometryProperties mirrorProperties = CadIO::analyzeShape(patternDocument.objects[2].shape);
+        require(near(patternProperties.volumeMm3, 3000.0) && patternProperties.hasBounds &&
+                    near(patternProperties.boundsMm.x(), 50.0),
+                "linear pattern count, volume, or bounds are incorrect");
+        require(near(mirrorProperties.volumeMm3, 2000.0) && mirrorProperties.hasBounds &&
+                    near(mirrorProperties.boundsMm.x(), 24.0),
+                "YZ mirror-copy volume or bounds are incorrect");
+        patternDocument.variables[QStringLiteral("Copies")] = QStringLiteral("4");
+        CadIO::recomputeParametricFeatures(patternDocument);
+        require(near(CadIO::analyzeShape(patternDocument.objects[1].shape).volumeMm3, 4000.0),
+                "linear pattern did not recompute after its count variable changed");
+        CadDocument invalidPatternDocument = patternDocument;
+        invalidPatternDocument.variables[QStringLiteral("Copies")] = QStringLiteral("2.5");
+        bool fractionalPatternCountRejected = false;
+        try {
+            CadIO::recomputeParametricFeatures(invalidPatternDocument);
+        } catch (const std::exception&) {
+            fractionalPatternCountRejected = true;
+        }
+        require(fractionalPatternCountRejected, "fractional linear pattern count was not rejected");
+        require(near(CadIO::analyzeShape(invalidPatternDocument.objects[1].shape).volumeMm3, 4000.0),
+                "invalid pattern count partially replaced the previous valid result");
 
         CadObject circle;
         circle.id = cadNewId();
@@ -113,6 +256,32 @@ int main(int argc, char** argv)
                 "round-trip sketch formulas are incorrect");
         require(near(CadIO::analyzeShape(loaded.objects[1].shape).volumeMm3, 18000.0),
                 "round-trip B-Rep volume is incorrect");
+
+        const QString booleanProjectPath = temporaryDirectory.filePath(QStringLiteral("boolean-features.aoscad"));
+        CadIO::saveProject(booleanDocument, booleanProjectPath);
+        const CadDocument loadedBooleans = CadIO::loadProject(booleanProjectPath);
+        require(loadedBooleans.objects.size() == booleanDocument.objects.size() &&
+                    loadedBooleans.objects[2].primitiveType == QStringLiteral("union") &&
+                    near(CadIO::analyzeShape(loadedBooleans.objects[2].shape).volumeMm3, 1300.0) &&
+                    near(CadIO::analyzeShape(loadedBooleans.objects[4].shape).volumeMm3, 700.0),
+                "boolean feature graph did not survive project round-trip");
+
+        const QString edgeProjectPath = temporaryDirectory.filePath(QStringLiteral("edge-features.aoscad"));
+        CadIO::saveProject(edgeTreatmentDocument, edgeProjectPath);
+        const CadDocument loadedEdgeFeatures = CadIO::loadProject(edgeProjectPath);
+        require(loadedEdgeFeatures.objects.size() == edgeTreatmentDocument.objects.size() &&
+                    near(CadIO::analyzeShape(loadedEdgeFeatures.objects[1].shape).volumeMm3, filletedVolume) &&
+                    near(CadIO::analyzeShape(loadedEdgeFeatures.objects[2].shape).volumeMm3, chamferedVolume),
+                "fillet or chamfer feature did not survive project round-trip");
+
+        const QString patternProjectPath = temporaryDirectory.filePath(QStringLiteral("pattern-features.aoscad"));
+        CadIO::saveProject(patternDocument, patternProjectPath);
+        const CadDocument loadedPatterns = CadIO::loadProject(patternProjectPath);
+        require(loadedPatterns.variables.value(QStringLiteral("Copies")) == QStringLiteral("4") &&
+                    loadedPatterns.objects[2].primitiveType == QStringLiteral("mirror-yz") &&
+                    near(CadIO::analyzeShape(loadedPatterns.objects[1].shape).volumeMm3, 4000.0) &&
+                    near(CadIO::analyzeShape(loadedPatterns.objects[2].shape).volumeMm3, 2000.0),
+                "pattern and mirror features did not survive project round-trip");
 
         bool cycleDetected = false;
         CadDocument cyclic = document;

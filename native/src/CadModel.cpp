@@ -11,6 +11,11 @@
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepAlgoAPI_Common.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
+#include <BRepAlgoAPI_Fuse.hxx>
+#include <BRepFilletAPI_MakeChamfer.hxx>
+#include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
@@ -33,7 +38,9 @@
 #include <StlAPI_Writer.hxx>
 #include <TopAbs_Orientation.hxx>
 #include <TopAbs_ShapeEnum.hxx>
+#include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
 #include <TopLoc_Location.hxx>
 #include <TopoDS_Compound.hxx>
 #include <TopoDS_Edge.hxx>
@@ -364,6 +371,28 @@ void writeObj(const CadDocument& document, const QString& filePath, std::optiona
         throw CadError(QStringLiteral("Ошибка записи OBJ-файла."));
 }
 
+double positiveVolumeOfSolids(const TopoDS_Shape& shape)
+{
+    if (shape.IsNull())
+        return 0.0;
+
+    double totalVolume = 0.0;
+    const auto addSolidVolume = [&totalVolume](const TopoDS_Shape& solid) {
+        GProp_GProps volumeProperties;
+        BRepGProp::VolumeProperties(solid, volumeProperties, true);
+        const double volume = std::abs(volumeProperties.Mass());
+        if (std::isfinite(volume))
+            totalVolume += volume;
+    };
+    if (shape.ShapeType() == TopAbs_SOLID) {
+        addSolidVolume(shape);
+    } else {
+        for (TopExp_Explorer explorer(shape, TopAbs_SOLID); explorer.More(); explorer.Next())
+            addSolidVolume(explorer.Current());
+    }
+    return std::isfinite(totalVolume) ? totalVolume : 0.0;
+}
+
 } // namespace
 
 QString cadNewId()
@@ -440,10 +469,14 @@ int primitiveParameterCount(const QString& primitiveType)
     if (primitiveType == QStringLiteral("box") || primitiveType == QStringLiteral("cone"))
         return 3;
     if (primitiveType == QStringLiteral("cylinder") || primitiveType == QStringLiteral("torus") ||
-        primitiveType == QStringLiteral("sketch-rectangle"))
+        primitiveType == QStringLiteral("sketch-rectangle") ||
+        primitiveType == QStringLiteral("linear-pattern-x") ||
+        primitiveType == QStringLiteral("linear-pattern-y") ||
+        primitiveType == QStringLiteral("linear-pattern-z"))
         return 2;
     if (primitiveType == QStringLiteral("sphere") || primitiveType == QStringLiteral("sketch-circle") ||
-        primitiveType == QStringLiteral("extrude"))
+        primitiveType == QStringLiteral("extrude") || primitiveType == QStringLiteral("fillet") ||
+        primitiveType == QStringLiteral("chamfer"))
         return 1;
     return 0;
 }
@@ -466,6 +499,14 @@ QStringList primitiveParameterNames(const QString& primitiveType)
         return {QStringLiteral("Радиус")};
     if (primitiveType == QStringLiteral("extrude"))
         return {QStringLiteral("Длина выдавливания")};
+    if (primitiveType == QStringLiteral("fillet"))
+        return {QStringLiteral("Радиус скругления · мм")};
+    if (primitiveType == QStringLiteral("chamfer"))
+        return {QStringLiteral("Размер фаски · мм")};
+    if (primitiveType == QStringLiteral("linear-pattern-x") ||
+        primitiveType == QStringLiteral("linear-pattern-y") ||
+        primitiveType == QStringLiteral("linear-pattern-z"))
+        return {QStringLiteral("Количество экземпляров"), QStringLiteral("Шаг · мм")};
     return {};
 }
 
@@ -545,9 +586,7 @@ CadGeometryProperties CadIO::analyzeShape(const TopoDS_Shape& shape)
     BRepGProp::SurfaceProperties(shape, surfaceProperties);
     result.surfaceAreaMm2 = std::abs(surfaceProperties.Mass());
 
-    GProp_GProps volumeProperties;
-    BRepGProp::VolumeProperties(shape, volumeProperties, true);
-    result.volumeMm3 = std::abs(volumeProperties.Mass());
+    result.volumeMm3 = positiveVolumeOfSolids(shape);
     result.hasVolume = std::isfinite(result.volumeMm3) && result.volumeMm3 > 1.0e-9;
 
     Bnd_Box bounds;
@@ -610,6 +649,171 @@ TopoDS_Shape CadIO::makeExtrusion(const CadObject& sketch, double lengthMm, bool
     return result;
 }
 
+namespace {
+
+void validateVolumeShape(const TopoDS_Shape& shape, const QString& operationName)
+{
+    if (shape.IsNull())
+        throw CadError(QStringLiteral("%1 не создала геометрию.").arg(operationName));
+    if (!BRepCheck_Analyzer(shape).IsValid())
+        throw CadError(QStringLiteral("%1 создала некорректную B-Rep-геометрию.").arg(operationName));
+
+    const double volume = positiveVolumeOfSolids(shape);
+    if (!std::isfinite(volume) || volume <= 1.0e-9)
+        throw CadError(QStringLiteral("%1 должна создавать тело с ненулевым объёмом.").arg(operationName));
+}
+
+TopoDS_Shape transformedCopy(const TopoDS_Shape& shape, const gp_Trsf& transform, const QString& operationName)
+{
+    BRepBuilderAPI_Transform operation(shape, transform, true);
+    if (!operation.IsDone() || operation.Shape().IsNull())
+        throw CadError(QStringLiteral("%1: не удалось применить преобразование.").arg(operationName));
+    return operation.Shape();
+}
+
+} // namespace
+
+TopoDS_Shape CadIO::makeBoolean(const TopoDS_Shape& left,
+                                const TopoDS_Shape& right,
+                                const QString& operation)
+{
+    validateVolumeShape(left, QStringLiteral("Основание булевой операции"));
+    validateVolumeShape(right, QStringLiteral("Инструмент булевой операции"));
+
+    TopoDS_Shape result;
+    if (operation == QStringLiteral("union")) {
+        BRepAlgoAPI_Fuse builder(left, right);
+        builder.Build();
+        if (!builder.IsDone())
+            throw CadError(QStringLiteral("Объединение тел не выполнено. Проверьте пересечение и корректность тел."));
+        result = builder.Shape();
+    } else if (operation == QStringLiteral("cut")) {
+        BRepAlgoAPI_Cut builder(left, right);
+        builder.Build();
+        if (!builder.IsDone())
+            throw CadError(QStringLiteral("Вычитание тел не выполнено. Проверьте корректность тел."));
+        result = builder.Shape();
+    } else if (operation == QStringLiteral("common")) {
+        BRepAlgoAPI_Common builder(left, right);
+        builder.Build();
+        if (!builder.IsDone())
+            throw CadError(QStringLiteral("Пересечение тел не выполнено. Проверьте корректность тел."));
+        result = builder.Shape();
+    } else {
+        throw CadError(QStringLiteral("Неизвестный тип булевой операции «%1».").arg(operation));
+    }
+
+    validateVolumeShape(result, QStringLiteral("Булева операция"));
+    return result;
+}
+
+TopoDS_Shape CadIO::makeFillet(const TopoDS_Shape& shape, double radiusMm)
+{
+    validateVolumeShape(shape, QStringLiteral("Исходное тело для скругления"));
+    if (!std::isfinite(radiusMm) || radiusMm <= 1.0e-9)
+        throw CadError(QStringLiteral("Радиус скругления должен быть положительным конечным числом."));
+
+    TopTools_IndexedMapOfShape edges;
+    TopExp::MapShapes(shape, TopAbs_EDGE, edges);
+    if (edges.Extent() == 0)
+        throw CadError(QStringLiteral("В исходном теле не найдены рёбра для скругления."));
+
+    BRepFilletAPI_MakeFillet builder(shape);
+    for (Standard_Integer i = 1; i <= edges.Extent(); ++i)
+        builder.Add(radiusMm, TopoDS::Edge(edges.FindKey(i)));
+    builder.Build();
+    if (!builder.IsDone())
+        throw CadError(QStringLiteral("Скругление всех рёбер не выполнено. Уменьшите радиус или проверьте топологию тела."));
+
+    const TopoDS_Shape result = builder.Shape();
+    validateVolumeShape(result, QStringLiteral("Скругление"));
+    return result;
+}
+
+TopoDS_Shape CadIO::makeChamfer(const TopoDS_Shape& shape, double distanceMm)
+{
+    validateVolumeShape(shape, QStringLiteral("Исходное тело для фаски"));
+    if (!std::isfinite(distanceMm) || distanceMm <= 1.0e-9)
+        throw CadError(QStringLiteral("Размер фаски должен быть положительным конечным числом."));
+
+    TopTools_IndexedMapOfShape edges;
+    TopExp::MapShapes(shape, TopAbs_EDGE, edges);
+    if (edges.Extent() == 0)
+        throw CadError(QStringLiteral("В исходном теле не найдены рёбра для фаски."));
+
+    BRepFilletAPI_MakeChamfer builder(shape);
+    for (Standard_Integer i = 1; i <= edges.Extent(); ++i)
+        builder.Add(distanceMm, TopoDS::Edge(edges.FindKey(i)));
+    builder.Build();
+    if (!builder.IsDone())
+        throw CadError(QStringLiteral("Фаска на всех рёбрах не построена. Уменьшите размер или проверьте топологию тела."));
+
+    const TopoDS_Shape result = builder.Shape();
+    validateVolumeShape(result, QStringLiteral("Фаска"));
+    return result;
+}
+
+TopoDS_Shape CadIO::makeLinearPattern(const TopoDS_Shape& shape,
+                                      const QString& axis,
+                                      int instanceCount,
+                                      double spacingMm)
+{
+    validateVolumeShape(shape, QStringLiteral("Исходное тело для линейного массива"));
+    if (instanceCount < 2 || instanceCount > 100)
+        throw CadError(QStringLiteral("Количество экземпляров линейного массива должно быть от 2 до 100."));
+    if (!std::isfinite(spacingMm) || spacingMm <= 1.0e-9)
+        throw CadError(QStringLiteral("Шаг линейного массива должен быть положительным конечным числом."));
+
+    const QString normalizedAxis = axis.trimmed().toUpper();
+    gp_Vec direction(1.0, 0.0, 0.0);
+    if (normalizedAxis == QStringLiteral("Y"))
+        direction = gp_Vec(0.0, 1.0, 0.0);
+    else if (normalizedAxis == QStringLiteral("Z"))
+        direction = gp_Vec(0.0, 0.0, 1.0);
+    else if (normalizedAxis != QStringLiteral("X"))
+        throw CadError(QStringLiteral("Ось линейного массива должна быть X, Y или Z."));
+
+    TopoDS_Compound compound;
+    BRep_Builder compoundBuilder;
+    compoundBuilder.MakeCompound(compound);
+    compoundBuilder.Add(compound, shape);
+    for (int instance = 1; instance < instanceCount; ++instance) {
+        gp_Trsf translation;
+        translation.SetTranslation(direction * (spacingMm * static_cast<double>(instance)));
+        compoundBuilder.Add(compound,
+                            transformedCopy(shape, translation, QStringLiteral("Линейный массив")));
+    }
+
+    validateVolumeShape(compound, QStringLiteral("Линейный массив"));
+    return compound;
+}
+
+TopoDS_Shape CadIO::makeMirror(const TopoDS_Shape& shape, const QString& plane)
+{
+    validateVolumeShape(shape, QStringLiteral("Исходное тело для зеркального отражения"));
+
+    const QString normalizedPlane = plane.trimmed().toUpper();
+    gp_Dir normal(0.0, 0.0, 1.0);
+    if (normalizedPlane == QStringLiteral("YZ"))
+        normal = gp_Dir(1.0, 0.0, 0.0);
+    else if (normalizedPlane == QStringLiteral("ZX"))
+        normal = gp_Dir(0.0, 1.0, 0.0);
+    else if (normalizedPlane != QStringLiteral("XY"))
+        throw CadError(QStringLiteral("Плоскость зеркального отражения должна быть XY, YZ или ZX."));
+
+    gp_Trsf reflection;
+    reflection.SetMirror(gp_Ax2(gp_Pnt(0.0, 0.0, 0.0), normal));
+    const TopoDS_Shape reflected = transformedCopy(shape, reflection, QStringLiteral("Зеркальное отражение"));
+
+    TopoDS_Compound compound;
+    BRep_Builder compoundBuilder;
+    compoundBuilder.MakeCompound(compound);
+    compoundBuilder.Add(compound, shape);
+    compoundBuilder.Add(compound, reflected);
+    validateVolumeShape(compound, QStringLiteral("Зеркальное отражение"));
+    return compound;
+}
+
 void CadIO::recomputeParametricFeatures(CadDocument& document)
 {
     CadDocument updated = document;
@@ -657,6 +861,49 @@ void CadIO::recomputeParametricFeatures(CadDocument& document)
             const std::vector<double> parameters = evaluatedParameters(object, variableValues);
             object.shape = makeExtrusion(updated.objects[static_cast<std::size_t>(sketchIndex)], parameters.front(), object.symmetricExtrude);
             object.primitiveParameters = parameters;
+        } else if (object.featureType == QStringLiteral("boolean")) {
+            if (object.inputs.size() != 2)
+                throw CadError(QStringLiteral("Булева операция должна ссылаться ровно на два тела."));
+            if (object.inputs[0] == object.inputs[1])
+                throw CadError(QStringLiteral("Для булевой операции выбраны два одинаковых тела."));
+            const CadObject& left = updated.objects[static_cast<std::size_t>(indexById.value(object.inputs[0]))];
+            const CadObject& right = updated.objects[static_cast<std::size_t>(indexById.value(object.inputs[1]))];
+            object.shape = makeBoolean(left.worldShape(), right.worldShape(), object.primitiveType);
+            object.primitiveParameters.clear();
+        } else if (object.featureType == QStringLiteral("fillet") ||
+                   object.featureType == QStringLiteral("chamfer")) {
+            if (object.primitiveType != object.featureType)
+                throw CadError(QStringLiteral("Тип параметров не совпадает с фичей «%1».").arg(object.featureType));
+            if (object.inputs.size() != 1)
+                throw CadError(QStringLiteral("Фича скругления или фаски должна ссылаться ровно на одно тело."));
+            const CadObject& input = updated.objects[static_cast<std::size_t>(indexById.value(object.inputs.front()))];
+            const std::vector<double> parameters = evaluatedParameters(object, variableValues);
+            object.shape = object.featureType == QStringLiteral("fillet")
+                ? makeFillet(input.worldShape(), parameters.front())
+                : makeChamfer(input.worldShape(), parameters.front());
+            object.primitiveParameters = parameters;
+        } else if (object.featureType == QStringLiteral("pattern")) {
+            if (object.inputs.size() != 1)
+                throw CadError(QStringLiteral("Массив должен ссылаться ровно на одно тело."));
+            const CadObject& input = updated.objects[static_cast<std::size_t>(indexById.value(object.inputs.front()))];
+            const std::vector<double> parameters = evaluatedParameters(object, variableValues);
+            if (parameters.size() != 2 || parameters[0] < 2.0 || parameters[0] > 100.0 ||
+                std::floor(parameters[0]) != parameters[0])
+                throw CadError(QStringLiteral("Количество экземпляров массива должно быть целым числом от 2 до 100."));
+            if (!object.primitiveType.startsWith(QStringLiteral("linear-pattern-")))
+                throw CadError(QStringLiteral("Тип массива «%1» не поддерживается.").arg(object.primitiveType));
+            const QString axis = object.primitiveType.right(1);
+            object.shape = makeLinearPattern(input.worldShape(), axis, static_cast<int>(parameters[0]), parameters[1]);
+            object.primitiveParameters = parameters;
+        } else if (object.featureType == QStringLiteral("mirror")) {
+            if (object.inputs.size() != 1)
+                throw CadError(QStringLiteral("Зеркальное отражение должно ссылаться ровно на одно тело."));
+            const CadObject& input = updated.objects[static_cast<std::size_t>(indexById.value(object.inputs.front()))];
+            if (!object.primitiveType.startsWith(QStringLiteral("mirror-")))
+                throw CadError(QStringLiteral("Плоскость зеркального отражения не задана."));
+            const QString plane = object.primitiveType.mid(QStringLiteral("mirror-").size());
+            object.shape = makeMirror(input.worldShape(), plane);
+            object.primitiveParameters.clear();
         } else if (object.featureType == QStringLiteral("primitive")) {
             const std::vector<double> parameters = evaluatedParameters(object, variableValues);
             object.shape = makePrimitiveShape(object.primitiveType, parameters, object.sketchPlane, object.sketchOrigin);
@@ -773,7 +1020,8 @@ CadDocument CadIO::loadProject(const QString& filePath)
         if (projectVersion >= 3) {
             const QString primitiveType = item.value(QStringLiteral("primitiveType")).toString();
             const QJsonArray parameterValues = item.value(QStringLiteral("primitiveParameters")).toArray();
-            if (primitiveParameterCount(primitiveType) > 0 && primitiveParameterCount(primitiveType) == parameterValues.size()) {
+            const int expectedParameterCount = primitiveParameterCount(primitiveType);
+            if (expectedParameterCount > 0 && expectedParameterCount == parameterValues.size()) {
                 object.primitiveType = primitiveType;
                 object.primitiveParameters.reserve(static_cast<std::size_t>(parameterValues.size()));
                 for (const QJsonValue& parameter : parameterValues) {
@@ -784,6 +1032,11 @@ CadDocument CadIO::loadProject(const QString& filePath)
                     }
                     object.primitiveParameters.push_back(parameter.toDouble());
                 }
+            } else if (parameterValues.isEmpty() &&
+                       (primitiveType == QStringLiteral("union") || primitiveType == QStringLiteral("cut") ||
+                        primitiveType == QStringLiteral("common") || primitiveType == QStringLiteral("mirror-xy") ||
+                        primitiveType == QStringLiteral("mirror-yz") || primitiveType == QStringLiteral("mirror-zx"))) {
+                object.primitiveType = primitiveType;
             }
             const QString materialId = item.value(QStringLiteral("materialId")).toString(QStringLiteral("unassigned"));
             object.materialId = materialId;
