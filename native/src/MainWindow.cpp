@@ -94,7 +94,7 @@ bool sameDocumentState(const CadDocument& left, const CadDocument& right)
 
 QString openFilter()
 {
-    return QStringLiteral("CAD-файлы (*.step *.stp *.iges *.igs *.brep *.brp *.stl *.obj *.sldprt *.sldasm *.slddrw *.tfc *.grb);;Все файлы (*.*)");
+    return QStringLiteral("CAD-файлы (*.step *.stp *.iges *.igs *.brep *.brp *.stl *.obj *.ply);;Все файлы (*.*)");
 }
 
 QString saveFilter(const QString& extension)
@@ -713,7 +713,6 @@ void MainWindow::createInspectorDock()
     scrollArea->setWidget(panel);
     dock->setWidget(scrollArea);
     addDockWidget(Qt::RightDockWidgetArea, dock);
-    dock->hide();
 
     connect(objectName_, &QLineEdit::editingFinished, this, [this] {
         const int index = selectedIndex();
@@ -2581,10 +2580,11 @@ void MainWindow::showCompatibilityHelp()
 {
     QMessageBox::information(this, QStringLiteral("Форматы и совместимость CAD"),
         QStringLiteral("AoSCAD Studio — отдельная CAD-среда на C++ и Open CASCADE.\n\n"
-                       "Импорт: STEP / STP, IGES / IGS, BREP, STL и OBJ. Экспорт: STEP AP214/AP242, IGES, BREP, STL и OBJ.\n\n"
+                       "Импорт: STEP / STP, IGES / IGS, BREP / BRP, STL, OBJ и PLY (ASCII и бинарный). PLY, STL и OBJ импортируются как полигональная сетка.\n"
+                       "Экспорт: STEP AP214/AP242, IGES, BREP, STL и OBJ.\n\n"
                        "Нативные файлы SolidWorks (.SLDPRT / .SLDASM) и T-FLEX (.TFC / .GRB) напрямую не открываются. "
                        "Откройте модель в исходной CAD-системе и экспортируйте в STEP AP214/AP242 или IGES.\n\n"
-                       "Экспортируйте STL для Aeros Engine. При обмене через STL/OBJ передаётся полигональная сетка, а не параметрическая история CAD."));
+                       "Экспортируйте STL для Aeros Engine. При обмене через STL/OBJ/PLY передаётся полигональная сетка, а не параметрическая история CAD."));
 }
 
 void MainWindow::showAbout()

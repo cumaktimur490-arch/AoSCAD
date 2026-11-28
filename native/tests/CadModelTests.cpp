@@ -2,6 +2,8 @@
 #include "ExpressionParser.hpp"
 
 #include <QCoreApplication>
+#include <QDataStream>
+#include <QFile>
 #include <QTemporaryDir>
 
 #include <Standard_Failure.hxx>
@@ -246,6 +248,45 @@ int main(int argc, char** argv)
 
         QTemporaryDir temporaryDirectory;
         require(temporaryDirectory.isValid(), "could not create temporary directory");
+
+        const QString asciiPlyPath = temporaryDirectory.filePath(QStringLiteral("tetrahedron.ply"));
+        QFile asciiPlyFile(asciiPlyPath);
+        require(asciiPlyFile.open(QIODevice::WriteOnly), "could not create ASCII PLY fixture");
+        const QByteArray asciiPlyData =
+            "ply\nformat ascii 1.0\ncomment tetrahedron fixture\n"
+            "element vertex 4\nproperty float x\nproperty float y\nproperty float z\n"
+            "element face 4\nproperty list uchar int vertex_indices\nend_header\n"
+            "0 0 0\n1 0 0\n0 1 0\n0 0 1\n"
+            "3 0 2 1\n3 0 1 3\n3 0 3 2\n3 1 2 3\n";
+        require(asciiPlyFile.write(asciiPlyData) == asciiPlyData.size(), "could not write ASCII PLY fixture");
+        asciiPlyFile.close();
+        const CadObject asciiPlyObject = CadIO::importFile(asciiPlyPath);
+        require(asciiPlyObject.featureType == QStringLiteral("imported-body") && !asciiPlyObject.shape.IsNull(),
+                "ASCII PLY did not import as a mesh body");
+        require(!CadIO::triangulate(asciiPlyObject.shape, 0).empty(), "ASCII PLY imported without renderable triangles");
+
+        const QString binaryPlyPath = temporaryDirectory.filePath(QStringLiteral("triangle-binary.ply"));
+        QFile binaryPlyFile(binaryPlyPath);
+        require(binaryPlyFile.open(QIODevice::WriteOnly), "could not create binary PLY fixture");
+        const QByteArray binaryPlyHeader =
+            "ply\nformat binary_little_endian 1.0\n"
+            "element vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
+            "element face 1\nproperty list uchar int vertex_indices\nend_header\n";
+        require(binaryPlyFile.write(binaryPlyHeader) == binaryPlyHeader.size(), "could not write binary PLY header");
+        QDataStream binaryPlyData(&binaryPlyFile);
+        binaryPlyData.setByteOrder(QDataStream::LittleEndian);
+        binaryPlyData.setFloatingPointPrecision(QDataStream::SinglePrecision);
+        binaryPlyData << 0.0F << 0.0F << 0.0F
+                      << 1.0F << 0.0F << 0.0F
+                      << 0.0F << 1.0F << 0.0F
+                      << quint8(3) << qint32(0) << qint32(1) << qint32(2);
+        require(binaryPlyData.status() == QDataStream::Ok, "could not write binary PLY data");
+        binaryPlyFile.close();
+        const CadObject binaryPlyObject = CadIO::importFile(binaryPlyPath);
+        require(binaryPlyObject.featureType == QStringLiteral("imported-body") &&
+                    !CadIO::triangulate(binaryPlyObject.shape, 0).empty(),
+                "binary little-endian PLY did not import as a renderable mesh");
+
         const QString projectPath = temporaryDirectory.filePath(QStringLiteral("roundtrip.aoscad"));
         CadIO::saveProject(document, projectPath);
         const CadDocument loaded = CadIO::loadProject(projectPath);

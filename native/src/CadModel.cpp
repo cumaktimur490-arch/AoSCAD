@@ -63,9 +63,13 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTemporaryDir>
+#include <QTextStream>
 #include <QUuid>
+#include <QtEndian>
 
 #include <algorithm>
+#include <cstring>
+#include <iterator>
 #include <cmath>
 #include <functional>
 #include <fstream>
@@ -184,6 +188,313 @@ TopoDS_Shape readObj(const QString& path)
 
     if (compound.IsNull() || TopExp_Explorer(compound, TopAbs_FACE).More() == false)
         throw CadError(QStringLiteral("В OBJ не найдены пригодные грани."));
+    return compound;
+}
+
+struct PlyProperty {
+    QString name;
+    QString valueType;
+    QString countType;
+    QString itemType;
+    bool isList{false};
+};
+
+struct PlyElement {
+    QString name;
+    quint64 count{0};
+    std::vector<PlyProperty> properties;
+};
+
+struct PlyFace {
+    std::vector<quint64> vertexIndices;
+};
+
+int plyScalarSize(const QString& type)
+{
+    if (type == QStringLiteral("char") || type == QStringLiteral("int8") ||
+        type == QStringLiteral("uchar") || type == QStringLiteral("uint8"))
+        return 1;
+    if (type == QStringLiteral("short") || type == QStringLiteral("int16") ||
+        type == QStringLiteral("ushort") || type == QStringLiteral("uint16"))
+        return 2;
+    if (type == QStringLiteral("int") || type == QStringLiteral("int32") ||
+        type == QStringLiteral("uint") || type == QStringLiteral("uint32") ||
+        type == QStringLiteral("float") || type == QStringLiteral("float32"))
+        return 4;
+    if (type == QStringLiteral("long") || type == QStringLiteral("int64") ||
+        type == QStringLiteral("ulong") || type == QStringLiteral("uint64") ||
+        type == QStringLiteral("double") || type == QStringLiteral("float64"))
+        return 8;
+    return 0;
+}
+
+bool plyIntegerType(const QString& type)
+{
+    return plyScalarSize(type) > 0 && type != QStringLiteral("float") && type != QStringLiteral("float32") &&
+           type != QStringLiteral("double") && type != QStringLiteral("float64");
+}
+
+template<typename Unsigned>
+Unsigned readPlyUnsigned(QFile& file, bool bigEndian)
+{
+    const QByteArray bytes = file.read(static_cast<qint64>(sizeof(Unsigned)));
+    if (bytes.size() != static_cast<qsizetype>(sizeof(Unsigned)))
+        throw CadError(QStringLiteral("PLY-файл неожиданно закончился в бинарных данных."));
+    const auto* data = reinterpret_cast<const uchar*>(bytes.constData());
+    return bigEndian ? qFromBigEndian<Unsigned>(data) : qFromLittleEndian<Unsigned>(data);
+}
+
+template<typename Signed, typename Unsigned>
+Signed readPlySigned(QFile& file, bool bigEndian)
+{
+    const Unsigned bits = readPlyUnsigned<Unsigned>(file, bigEndian);
+    Signed value{};
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+double readPlyBinaryScalar(QFile& file, const QString& type, bool bigEndian)
+{
+    if (type == QStringLiteral("char") || type == QStringLiteral("int8"))
+        return static_cast<double>(readPlySigned<qint8, quint8>(file, bigEndian));
+    if (type == QStringLiteral("uchar") || type == QStringLiteral("uint8"))
+        return static_cast<double>(readPlyUnsigned<quint8>(file, bigEndian));
+    if (type == QStringLiteral("short") || type == QStringLiteral("int16"))
+        return static_cast<double>(readPlySigned<qint16, quint16>(file, bigEndian));
+    if (type == QStringLiteral("ushort") || type == QStringLiteral("uint16"))
+        return static_cast<double>(readPlyUnsigned<quint16>(file, bigEndian));
+    if (type == QStringLiteral("int") || type == QStringLiteral("int32") ||
+        type == QStringLiteral("long") || type == QStringLiteral("int64")) {
+        if (type == QStringLiteral("long") || type == QStringLiteral("int64"))
+            return static_cast<double>(readPlySigned<qint64, quint64>(file, bigEndian));
+        return static_cast<double>(readPlySigned<qint32, quint32>(file, bigEndian));
+    }
+    if (type == QStringLiteral("uint") || type == QStringLiteral("uint32"))
+        return static_cast<double>(readPlyUnsigned<quint32>(file, bigEndian));
+    if (type == QStringLiteral("ulong") || type == QStringLiteral("uint64"))
+        return static_cast<double>(readPlyUnsigned<quint64>(file, bigEndian));
+    if (type == QStringLiteral("float") || type == QStringLiteral("float32")) {
+        const quint32 bits = readPlyUnsigned<quint32>(file, bigEndian);
+        float value{};
+        std::memcpy(&value, &bits, sizeof(value));
+        return static_cast<double>(value);
+    }
+    if (type == QStringLiteral("double") || type == QStringLiteral("float64")) {
+        const quint64 bits = readPlyUnsigned<quint64>(file, bigEndian);
+        double value{};
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    }
+    throw CadError(QStringLiteral("Тип данных «%1» не поддерживается в PLY.").arg(type));
+}
+
+double readPlyAsciiScalar(QTextStream& stream, const QString& type)
+{
+    if (plyScalarSize(type) == 0)
+        throw CadError(QStringLiteral("Тип данных «%1» не поддерживается в PLY.").arg(type));
+    QString token;
+    stream >> token;
+    bool valid = false;
+    const double value = token.toDouble(&valid);
+    if (!valid || !std::isfinite(value))
+        throw CadError(QStringLiteral("PLY-файл содержит некорректное ASCII-значение «%1».").arg(token));
+    return value;
+}
+
+TopoDS_Shape readPly(const QString& path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        throw CadError(QStringLiteral("Не удалось открыть PLY-файл."));
+    if (QString::fromUtf8(file.readLine()).trimmed() != QStringLiteral("ply"))
+        throw CadError(QStringLiteral("Файл не начинается с заголовка PLY."));
+
+    enum class PlyFormat { Ascii, BinaryLittleEndian, BinaryBigEndian };
+    PlyFormat format = PlyFormat::Ascii;
+    bool formatFound = false;
+    bool headerEnded = false;
+    int currentElement = -1;
+    int vertexElement = -1;
+    int faceElement = -1;
+    std::vector<PlyElement> elements;
+    constexpr quint64 maxRecords = 10000000;
+    constexpr quint64 maxListItems = 20000000;
+
+    while (!file.atEnd()) {
+        const QByteArray rawLine = file.readLine();
+        if (rawLine.isNull())
+            break;
+        const QString line = QString::fromUtf8(rawLine).trimmed();
+        if (line.isEmpty())
+            continue;
+        if (line == QStringLiteral("end_header")) {
+            headerEnded = true;
+            break;
+        }
+        const QStringList fields = line.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        if (fields.isEmpty() || fields.front() == QStringLiteral("comment") ||
+            fields.front() == QStringLiteral("obj_info"))
+            continue;
+        if (fields.front() == QStringLiteral("format")) {
+            if (fields.size() != 3 || fields[2] != QStringLiteral("1.0"))
+                throw CadError(QStringLiteral("Версия заголовка PLY не поддерживается."));
+            if (fields[1] == QStringLiteral("ascii"))
+                format = PlyFormat::Ascii;
+            else if (fields[1] == QStringLiteral("binary_little_endian"))
+                format = PlyFormat::BinaryLittleEndian;
+            else if (fields[1] == QStringLiteral("binary_big_endian"))
+                format = PlyFormat::BinaryBigEndian;
+            else
+                throw CadError(QStringLiteral("Кодировка PLY «%1» не поддерживается.").arg(fields[1]));
+            formatFound = true;
+        } else if (fields.front() == QStringLiteral("element")) {
+            if (fields.size() != 3)
+                throw CadError(QStringLiteral("Некорректное объявление элемента в заголовке PLY."));
+            bool validCount = false;
+            const quint64 count = fields[2].toULongLong(&validCount);
+            if (!validCount || count > maxRecords)
+                throw CadError(QStringLiteral("Количество записей элемента PLY некорректно или слишком велико."));
+            const QString elementName = fields[1];
+            if ((elementName == QStringLiteral("vertex") && vertexElement >= 0) ||
+                (elementName == QStringLiteral("face") && faceElement >= 0))
+                throw CadError(QStringLiteral("PLY содержит повторяющееся объявление vertex или face."));
+            elements.push_back({elementName, count, {}});
+            currentElement = static_cast<int>(elements.size()) - 1;
+            if (elementName == QStringLiteral("vertex"))
+                vertexElement = currentElement;
+            else if (elementName == QStringLiteral("face"))
+                faceElement = currentElement;
+        } else if (fields.front() == QStringLiteral("property")) {
+            if (currentElement < 0)
+                throw CadError(QStringLiteral("Свойство PLY объявлено до элемента."));
+            PlyProperty property;
+            if (fields.size() == 3) {
+                property.valueType = fields[1];
+                property.name = fields[2];
+            } else if (fields.size() == 5 && fields[1] == QStringLiteral("list")) {
+                property.isList = true;
+                property.countType = fields[2];
+                property.itemType = fields[3];
+                property.name = fields[4];
+                if (!plyIntegerType(property.countType))
+                    throw CadError(QStringLiteral("Тип длины списка «%1» должен быть целочисленным.").arg(property.countType));
+                if (plyScalarSize(property.itemType) == 0)
+                    throw CadError(QStringLiteral("Тип элементов списка «%1» не поддерживается.").arg(property.itemType));
+            } else {
+                throw CadError(QStringLiteral("Некорректное свойство в заголовке PLY."));
+            }
+            if (!property.isList && plyScalarSize(property.valueType) == 0)
+                throw CadError(QStringLiteral("Тип данных «%1» не поддерживается в PLY.").arg(property.valueType));
+            elements[static_cast<std::size_t>(currentElement)].properties.push_back(std::move(property));
+        }
+    }
+
+    if (!headerEnded || !formatFound)
+        throw CadError(QStringLiteral("Заголовок PLY не завершён или не содержит формат."));
+    if (vertexElement < 0)
+        throw CadError(QStringLiteral("В PLY не объявлены вершины."));
+    const PlyElement& vertexDefinition = elements[static_cast<std::size_t>(vertexElement)];
+    bool hasX = false, hasY = false, hasZ = false;
+    for (const PlyProperty& property : vertexDefinition.properties) {
+        hasX = hasX || (property.name == QStringLiteral("x") && !property.isList);
+        hasY = hasY || (property.name == QStringLiteral("y") && !property.isList);
+        hasZ = hasZ || (property.name == QStringLiteral("z") && !property.isList);
+    }
+    if (!hasX || !hasY || !hasZ)
+        throw CadError(QStringLiteral("В PLY должны быть заданы скалярные координаты x, y и z."));
+
+    std::vector<gp_Pnt> vertices;
+    vertices.reserve(static_cast<std::size_t>(vertexDefinition.count));
+    std::vector<PlyFace> faces;
+    if (faceElement >= 0)
+        faces.reserve(static_cast<std::size_t>(elements[static_cast<std::size_t>(faceElement)].count));
+    const bool binary = format != PlyFormat::Ascii;
+    const bool bigEndian = format == PlyFormat::BinaryBigEndian;
+    QTextStream asciiStream(&file);
+    const auto readScalar = [&](const QString& type) {
+        return binary ? readPlyBinaryScalar(file, type, bigEndian) : readPlyAsciiScalar(asciiStream, type);
+    };
+
+    for (const PlyElement& element : elements) {
+        for (quint64 record = 0; record < element.count; ++record) {
+            double coordinates[]{0.0, 0.0, 0.0};
+            bool coordinateFound[]{false, false, false};
+            std::vector<quint64> faceIndices;
+            bool hasFaceIndices = false;
+            for (const PlyProperty& property : element.properties) {
+                if (property.isList) {
+                    const double rawCount = readScalar(property.countType);
+                    if (rawCount < 0.0 || rawCount > static_cast<double>(maxListItems) ||
+                        std::floor(rawCount) != rawCount)
+                        throw CadError(QStringLiteral("PLY содержит некорректную или слишком длинную последовательность."));
+                    const quint64 count = static_cast<quint64>(rawCount);
+                    const bool vertexIndexList = element.name == QStringLiteral("face") &&
+                        (property.name == QStringLiteral("vertex_indices") || property.name == QStringLiteral("vertex_index"));
+                    if (vertexIndexList && (!plyIntegerType(property.itemType) || hasFaceIndices))
+                        throw CadError(QStringLiteral("Список индексов граней PLY имеет некорректный тип или повторяется."));
+                    hasFaceIndices = hasFaceIndices || vertexIndexList;
+                    for (quint64 i = 0; i < count; ++i) {
+                        const double value = readScalar(property.itemType);
+                        if (vertexIndexList) {
+                            if (value < 0.0 || value >= static_cast<double>(maxRecords) || std::floor(value) != value)
+                                throw CadError(QStringLiteral("PLY содержит некорректный индекс вершины."));
+                            faceIndices.push_back(static_cast<quint64>(value));
+                        }
+                    }
+                } else {
+                    const double value = readScalar(property.valueType);
+                    if (element.name == QStringLiteral("vertex")) {
+                        int axis = -1;
+                        if (property.name == QStringLiteral("x")) axis = 0;
+                        else if (property.name == QStringLiteral("y")) axis = 1;
+                        else if (property.name == QStringLiteral("z")) axis = 2;
+                        if (axis >= 0) {
+                            coordinates[axis] = value;
+                            coordinateFound[axis] = true;
+                        }
+                    }
+                }
+            }
+            if (element.name == QStringLiteral("vertex")) {
+                if (!coordinateFound[0] || !coordinateFound[1] || !coordinateFound[2] ||
+                    !std::isfinite(coordinates[0]) || !std::isfinite(coordinates[1]) ||
+                    !std::isfinite(coordinates[2]))
+                    throw CadError(QStringLiteral("PLY содержит вершину без корректных координат x, y и z."));
+                vertices.emplace_back(coordinates[0], coordinates[1], coordinates[2]);
+            } else if (element.name == QStringLiteral("face") && hasFaceIndices) {
+                faces.push_back({std::move(faceIndices)});
+            }
+        }
+    }
+
+    if (vertices.empty() || faces.empty())
+        throw CadError(QStringLiteral("В PLY не найдены вершины и полигональные грани."));
+
+    TopoDS_Compound compound;
+    BRep_Builder builder;
+    builder.MakeCompound(compound);
+    for (const PlyFace& faceData : faces) {
+        if (faceData.vertexIndices.size() < 3)
+            continue;
+        for (std::size_t i = 1; i + 1 < faceData.vertexIndices.size(); ++i) {
+            const quint64 indices[]{faceData.vertexIndices[0], faceData.vertexIndices[i], faceData.vertexIndices[i + 1]};
+            if (std::any_of(std::begin(indices), std::end(indices), [&vertices](quint64 index) {
+                    return index >= vertices.size();
+                }))
+                throw CadError(QStringLiteral("PLY ссылается на несуществующую вершину."));
+            BRepBuilderAPI_MakePolygon polygon;
+            for (quint64 index : indices)
+                polygon.Add(vertices[static_cast<std::size_t>(index)]);
+            polygon.Close();
+            if (!polygon.IsDone())
+                continue;
+            BRepBuilderAPI_MakeFace face(polygon.Wire());
+            if (face.IsDone())
+                builder.Add(compound, face.Face());
+        }
+    }
+    if (TopExp_Explorer(compound, TopAbs_FACE).More() == false)
+        throw CadError(QStringLiteral("В PLY не найдены пригодные полигональные грани."));
     return compound;
 }
 
@@ -560,12 +871,14 @@ CadObject CadIO::importFile(const QString& filePath)
         shape = readStl(filePath);
     else if (extension == QStringLiteral("obj"))
         shape = readObj(filePath);
+    else if (extension == QStringLiteral("ply"))
+        shape = readPly(filePath);
     else if (extension == QStringLiteral("sldprt") || extension == QStringLiteral("sldasm") ||
              extension == QStringLiteral("slddrw") || extension == QStringLiteral("tfc") ||
              extension == QStringLiteral("grb")) {
         throw CadError(QStringLiteral("Нативный формат не поддерживается. Экспортируйте модель из SolidWorks или T-FLEX в STEP AP214/AP242 либо IGES."));
     } else {
-        throw CadError(QStringLiteral("Формат .%1 не поддерживается. Используйте STEP, IGES, BREP, STL или OBJ.").arg(extension));
+        throw CadError(QStringLiteral("Формат .%1 не поддерживается. Используйте STEP, IGES, BREP, STL, OBJ или PLY.").arg(extension));
     }
 
     CadObject object;
