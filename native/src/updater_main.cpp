@@ -33,7 +33,7 @@
 #include <vector>
 
 #ifndef AOSCAD_VERSION
-#define AOSCAD_VERSION "0.5.0"
+#define AOSCAD_VERSION "0.6.0"
 #endif
 #define AOSCAD_WIDEN_IMPL(value) L##value
 #define AOSCAD_WIDEN(value) AOSCAD_WIDEN_IMPL(value)
