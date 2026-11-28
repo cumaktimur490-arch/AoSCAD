@@ -10,6 +10,7 @@
 
 #include <TopoDS_Shape.hxx>
 
+#include <array>
 #include <optional>
 #include <stdexcept>
 #include <vector>
@@ -24,8 +25,11 @@ struct CadGeometryProperties {
     double surfaceAreaMm2{0.0};
     double volumeMm3{0.0};
     QVector3D boundsMm{};
+    std::array<double, 3> centerOfMassMm{};
+    std::array<double, 3> inertiaTensorDiagonalMm5{};
     bool hasBounds{false};
     bool hasVolume{false};
+    bool hasInertia{false};
 };
 
 const std::vector<CadMaterial>& cadMaterials();
@@ -92,8 +96,15 @@ public:
     static void exportFile(const CadDocument& document,
                            const QString& filePath,
                            std::optional<std::size_t> objectIndex = std::nullopt);
-    static CadGeometryProperties analyzeShape(const TopoDS_Shape& shape);
+    static CadGeometryProperties analyzeShape(const TopoDS_Shape& shape, bool includeInertia = false);
+    static double intersectionVolumeMm3(const TopoDS_Shape& left, const TopoDS_Shape& right);
     static TopoDS_Shape makeExtrusion(const CadObject& sketch, double lengthMm, bool symmetric = false);
+    static TopoDS_Shape makeRevolution(const CadObject& sketch, const QString& axis, double angleDegrees);
+    static TopoDS_Shape makeThroughHole(const TopoDS_Shape& shape,
+                                        const QString& axis,
+                                        double diameterMm,
+                                        double offsetAmm,
+                                        double offsetBmm);
     static TopoDS_Shape makeBoolean(const TopoDS_Shape& left,
                                     const TopoDS_Shape& right,
                                     const QString& operation);
@@ -103,6 +114,10 @@ public:
                                           const QString& axis,
                                           int instanceCount,
                                           double spacingMm);
+    static TopoDS_Shape makeCircularPattern(const TopoDS_Shape& shape,
+                                            const QString& axis,
+                                            int instanceCount,
+                                            double angleStepDegrees);
     static TopoDS_Shape makeMirror(const TopoDS_Shape& shape, const QString& plane);
     static void recomputeParametricFeatures(CadDocument& document);
     static std::vector<CadTriangle> triangulate(const TopoDS_Shape& shape,

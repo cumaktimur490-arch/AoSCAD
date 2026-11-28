@@ -63,6 +63,8 @@ private:
     QLabel* densityValue_{nullptr};
     QLabel* boundsValue_{nullptr};
     QLabel* massValue_{nullptr};
+    QLabel* centerOfMassValue_{nullptr};
+    QLabel* inertiaValue_{nullptr};
     QLabel* objectCountLabel_{nullptr};
     QLabel* coordinateLabel_{nullptr};
     QAction* undoAction_{nullptr};
@@ -103,8 +105,12 @@ private:
     void addPrimitive(const QString& kind);
     void editPrimitiveParameters();
     void createBooleanFeature(const QString& operation);
+    void checkIntersection();
     void createEdgeTreatmentFeature(bool chamfer);
+    void createRevolutionFeature();
+    void createThroughHoleFeature(const QString& axis);
     void createLinearPatternFeature(const QString& axis);
+    void createCircularPatternFeature(const QString& axis);
     void createMirrorFeature(const QString& plane);
     void startSketch(CadViewport::SketchTool tool);
     void createSketch(const QString& profileType, const QVector2D& origin, const QVector2D& size);

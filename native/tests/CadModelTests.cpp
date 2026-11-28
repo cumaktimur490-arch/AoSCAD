@@ -94,6 +94,70 @@ int main(int argc, char** argv)
         require(symmetricProperties.hasVolume && near(symmetricProperties.volumeMm3, 18000.0),
                 "symmetric extrude volume is incorrect");
 
+        CadObject revolveSketch;
+        revolveSketch.id = cadNewId();
+        revolveSketch.name = QStringLiteral("Revolve profile");
+        revolveSketch.featureType = QStringLiteral("sketch");
+        revolveSketch.primitiveType = QStringLiteral("sketch-rectangle");
+        revolveSketch.sketchPlane = QStringLiteral("XY");
+        revolveSketch.sketchOrigin = QVector2D(5.0F, 0.0F);
+        revolveSketch.primitiveParameters = {5.0, 20.0};
+        CadObject revolveFeature;
+        revolveFeature.id = cadNewId();
+        revolveFeature.name = QStringLiteral("Revolve");
+        revolveFeature.featureType = QStringLiteral("revolve");
+        revolveFeature.primitiveType = QStringLiteral("revolve-y");
+        revolveFeature.inputs = {revolveSketch.id};
+        revolveFeature.primitiveParameters = {360.0};
+        revolveFeature.parameterExpressions.insert(QStringLiteral("p0"), QStringLiteral("Angle"));
+        CadDocument revolveDocument;
+        revolveDocument.variables.insert(QStringLiteral("Angle"), QStringLiteral("360"));
+        revolveDocument.objects = {revolveSketch, revolveFeature};
+        CadIO::recomputeParametricFeatures(revolveDocument);
+        const double fullRevolveVolume = 1500.0 * std::acos(-1.0);
+        require(near(CadIO::analyzeShape(revolveDocument.objects[1].shape).volumeMm3, fullRevolveVolume, 1.0e-6),
+                "full revolution volume is incorrect");
+        revolveDocument.variables[QStringLiteral("Angle")] = QStringLiteral("180");
+        CadIO::recomputeParametricFeatures(revolveDocument);
+        require(near(CadIO::analyzeShape(revolveDocument.objects[1].shape).volumeMm3, fullRevolveVolume * 0.5, 1.0e-6),
+                "parametric revolution did not update from its angle variable");
+
+        const CadObject holeBase = makeBoxObject(QStringLiteral("Hole base"), {20.0, 20.0, 20.0}, QVector3D(0, 0, 0));
+        const double expectedHoleVolume = 8000.0 - 80.0 * std::acos(-1.0);
+        for (const QString& axis : {QStringLiteral("X"), QStringLiteral("Y"), QStringLiteral("Z")}) {
+            const TopoDS_Shape hole = CadIO::makeThroughHole(holeBase.worldShape(), axis, 4.0, 10.0, 10.0);
+            require(near(CadIO::analyzeShape(hole).volumeMm3, expectedHoleVolume, 1.0e-6),
+                    "through-hole volume is incorrect for an axis");
+        }
+        CadObject holeFeature;
+        holeFeature.id = cadNewId();
+        holeFeature.name = QStringLiteral("Parametric through-hole");
+        holeFeature.featureType = QStringLiteral("hole");
+        holeFeature.primitiveType = QStringLiteral("hole-through-z");
+        holeFeature.inputs = {holeBase.id};
+        holeFeature.primitiveParameters = {4.0, 10.0, 10.0};
+        holeFeature.parameterExpressions.insert(QStringLiteral("p0"), QStringLiteral("Diameter"));
+        holeFeature.parameterExpressions.insert(QStringLiteral("p1"), QStringLiteral("10"));
+        holeFeature.parameterExpressions.insert(QStringLiteral("p2"), QStringLiteral("10"));
+        CadDocument holeDocument;
+        holeDocument.variables.insert(QStringLiteral("Diameter"), QStringLiteral("4"));
+        holeDocument.objects = {holeBase, holeFeature};
+        CadIO::recomputeParametricFeatures(holeDocument);
+        require(near(CadIO::analyzeShape(holeDocument.objects[1].shape).volumeMm3, expectedHoleVolume, 1.0e-6),
+                "parametric through-hole feature volume is incorrect");
+        holeDocument.variables[QStringLiteral("Diameter")] = QStringLiteral("6");
+        CadIO::recomputeParametricFeatures(holeDocument);
+        require(near(CadIO::analyzeShape(holeDocument.objects[1].shape).volumeMm3,
+                     8000.0 - 180.0 * std::acos(-1.0), 1.0e-6),
+                "through-hole did not update after its diameter variable changed");
+        bool missedHoleRejected = false;
+        try {
+            CadIO::makeThroughHole(holeBase.worldShape(), QStringLiteral("Z"), 4.0, 50.0, 50.0);
+        } catch (const std::exception&) {
+            missedHoleRejected = true;
+        }
+        require(missedHoleRejected, "through-hole outside the source body was not rejected");
+
         CadObject booleanBase = makeBoxObject(QStringLiteral("Base"), {10.0, 10.0, 10.0}, QVector3D(0, 0, 0));
         CadObject booleanTool = makeBoxObject(QStringLiteral("Tool"), {10.0, 10.0, 10.0}, QVector3D(5, 0, 0));
         CadObject unionFeature;
@@ -123,6 +187,14 @@ int main(int argc, char** argv)
                 "boolean cut volume is incorrect");
         require(near(CadIO::analyzeShape(booleanDocument.objects[4].shape).volumeMm3, 500.0),
                 "boolean common volume is incorrect");
+        require(near(CadIO::intersectionVolumeMm3(booleanDocument.objects[0].worldShape(),
+                                                  booleanDocument.objects[1].worldShape()), 500.0),
+                "intersection diagnostic returned an incorrect overlap volume");
+        const CadObject disjointTool = makeBoxObject(QStringLiteral("Disjoint tool"),
+                                                      {10.0, 10.0, 10.0}, QVector3D(20, 0, 0));
+        require(near(CadIO::intersectionVolumeMm3(booleanDocument.objects[0].worldShape(),
+                                                  disjointTool.worldShape()), 0.0),
+                "intersection diagnostic reported volume for disjoint bodies");
         booleanDocument.objects[1].position.setX(3.0F);
         CadIO::recomputeParametricFeatures(booleanDocument);
         require(near(CadIO::analyzeShape(booleanDocument.objects[2].shape).volumeMm3, 1300.0),
@@ -142,6 +214,18 @@ int main(int argc, char** argv)
         require(emptyIntersectionRejected, "empty boolean intersection was not rejected");
         require(near(CadIO::analyzeShape(failedBooleanDocument.objects[4].shape).volumeMm3, 700.0),
                 "failed boolean recompute partially replaced the previous valid result");
+
+        const CadObject propertyBox = makeBoxObject(QStringLiteral("Mass properties"),
+                                                     {2.0, 4.0, 6.0}, QVector3D(0, 0, 0));
+        const CadGeometryProperties massProperties = CadIO::analyzeShape(propertyBox.worldShape(), true);
+        require(massProperties.hasInertia &&
+                    near(massProperties.centerOfMassMm[0], 1.0) &&
+                    near(massProperties.centerOfMassMm[1], 2.0) &&
+                    near(massProperties.centerOfMassMm[2], 3.0) &&
+                    near(massProperties.inertiaTensorDiagonalMm5[0], 208.0) &&
+                    near(massProperties.inertiaTensorDiagonalMm5[1], 160.0) &&
+                    near(massProperties.inertiaTensorDiagonalMm5[2], 80.0),
+                "center of mass or inertia tensor is incorrect for a box");
 
         const CadObject edgeTreatmentBase = makeBoxObject(QStringLiteral("Edge treatment base"),
                                                            {30.0, 20.0, 10.0}, QVector3D(0, 0, 0));
@@ -197,18 +281,33 @@ int main(int argc, char** argv)
         mirrorFeature.featureType = QStringLiteral("mirror");
         mirrorFeature.primitiveType = QStringLiteral("mirror-yz");
         mirrorFeature.inputs = {patternBase.id};
+        CadObject circularPattern;
+        circularPattern.id = cadNewId();
+        circularPattern.name = QStringLiteral("Circular pattern");
+        circularPattern.featureType = QStringLiteral("pattern");
+        circularPattern.primitiveType = QStringLiteral("circular-pattern-z");
+        circularPattern.inputs = {patternBase.id};
+        circularPattern.primitiveParameters = {4.0, 90.0};
+        circularPattern.parameterExpressions.insert(QStringLiteral("p0"), QStringLiteral("CircularCopies"));
+        circularPattern.parameterExpressions.insert(QStringLiteral("p1"), QStringLiteral("90"));
         CadDocument patternDocument;
         patternDocument.variables.insert(QStringLiteral("Copies"), QStringLiteral("3"));
-        patternDocument.objects = {patternBase, linearPattern, mirrorFeature};
+        patternDocument.variables.insert(QStringLiteral("CircularCopies"), QStringLiteral("4"));
+        patternDocument.objects = {patternBase, linearPattern, mirrorFeature, circularPattern};
         CadIO::recomputeParametricFeatures(patternDocument);
         const CadGeometryProperties patternProperties = CadIO::analyzeShape(patternDocument.objects[1].shape);
         const CadGeometryProperties mirrorProperties = CadIO::analyzeShape(patternDocument.objects[2].shape);
+        const CadGeometryProperties circularPatternProperties = CadIO::analyzeShape(patternDocument.objects[3].shape);
         require(near(patternProperties.volumeMm3, 3000.0) && patternProperties.hasBounds &&
                     near(patternProperties.boundsMm.x(), 50.0),
                 "linear pattern count, volume, or bounds are incorrect");
         require(near(mirrorProperties.volumeMm3, 2000.0) && mirrorProperties.hasBounds &&
                     near(mirrorProperties.boundsMm.x(), 24.0),
                 "YZ mirror-copy volume or bounds are incorrect");
+        require(near(circularPatternProperties.volumeMm3, 4000.0) && circularPatternProperties.hasBounds &&
+                    near(circularPatternProperties.boundsMm.x(), 24.0) &&
+                    near(circularPatternProperties.boundsMm.y(), 24.0),
+                "circular pattern count, volume, or bounds are incorrect");
         patternDocument.variables[QStringLiteral("Copies")] = QStringLiteral("4");
         CadIO::recomputeParametricFeatures(patternDocument);
         require(near(CadIO::analyzeShape(patternDocument.objects[1].shape).volumeMm3, 4000.0),
@@ -224,6 +323,23 @@ int main(int argc, char** argv)
         require(fractionalPatternCountRejected, "fractional linear pattern count was not rejected");
         require(near(CadIO::analyzeShape(invalidPatternDocument.objects[1].shape).volumeMm3, 4000.0),
                 "invalid pattern count partially replaced the previous valid result");
+        patternDocument.variables[QStringLiteral("CircularCopies")] = QStringLiteral("3");
+        CadIO::recomputeParametricFeatures(patternDocument);
+        require(near(CadIO::analyzeShape(patternDocument.objects[3].shape).volumeMm3, 3000.0),
+                "circular pattern did not recompute after its count variable changed");
+        patternDocument.variables[QStringLiteral("CircularCopies")] = QStringLiteral("4");
+        CadIO::recomputeParametricFeatures(patternDocument);
+        CadDocument invalidCircularPatternDocument = patternDocument;
+        invalidCircularPatternDocument.objects[3].parameterExpressions[QStringLiteral("p1")] = QStringLiteral("100");
+        bool excessiveCircularSweepRejected = false;
+        try {
+            CadIO::recomputeParametricFeatures(invalidCircularPatternDocument);
+        } catch (const std::exception&) {
+            excessiveCircularSweepRejected = true;
+        }
+        require(excessiveCircularSweepRejected, "circular pattern covering more than 360 degrees was not rejected");
+        require(near(CadIO::analyzeShape(invalidCircularPatternDocument.objects[3].shape).volumeMm3, 4000.0),
+                "invalid circular-pattern recompute partially replaced its previous result");
 
         CadObject circle;
         circle.id = cadNewId();
@@ -320,9 +436,28 @@ int main(int argc, char** argv)
         const CadDocument loadedPatterns = CadIO::loadProject(patternProjectPath);
         require(loadedPatterns.variables.value(QStringLiteral("Copies")) == QStringLiteral("4") &&
                     loadedPatterns.objects[2].primitiveType == QStringLiteral("mirror-yz") &&
+                    loadedPatterns.objects[3].primitiveType == QStringLiteral("circular-pattern-z") &&
                     near(CadIO::analyzeShape(loadedPatterns.objects[1].shape).volumeMm3, 4000.0) &&
-                    near(CadIO::analyzeShape(loadedPatterns.objects[2].shape).volumeMm3, 2000.0),
-                "pattern and mirror features did not survive project round-trip");
+                    near(CadIO::analyzeShape(loadedPatterns.objects[2].shape).volumeMm3, 2000.0) &&
+                    near(CadIO::analyzeShape(loadedPatterns.objects[3].shape).volumeMm3, 4000.0),
+                "linear, circular-pattern, or mirror features did not survive project round-trip");
+
+        const QString revolveProjectPath = temporaryDirectory.filePath(QStringLiteral("revolve-feature.aoscad"));
+        CadIO::saveProject(revolveDocument, revolveProjectPath);
+        const CadDocument loadedRevolve = CadIO::loadProject(revolveProjectPath);
+        require(loadedRevolve.variables.value(QStringLiteral("Angle")) == QStringLiteral("180") &&
+                    loadedRevolve.objects[1].primitiveType == QStringLiteral("revolve-y") &&
+                    near(CadIO::analyzeShape(loadedRevolve.objects[1].shape).volumeMm3, fullRevolveVolume * 0.5, 1.0e-6),
+                "revolution feature or angle formula did not survive project round-trip");
+
+        const QString holeProjectPath = temporaryDirectory.filePath(QStringLiteral("hole-feature.aoscad"));
+        CadIO::saveProject(holeDocument, holeProjectPath);
+        const CadDocument loadedHole = CadIO::loadProject(holeProjectPath);
+        require(loadedHole.variables.value(QStringLiteral("Diameter")) == QStringLiteral("6") &&
+                    loadedHole.objects[1].primitiveType == QStringLiteral("hole-through-z") &&
+                    near(CadIO::analyzeShape(loadedHole.objects[1].shape).volumeMm3,
+                         8000.0 - 180.0 * std::acos(-1.0), 1.0e-6),
+                "through-hole feature or dimensions did not survive project round-trip");
 
         bool cycleDetected = false;
         CadDocument cyclic = document;

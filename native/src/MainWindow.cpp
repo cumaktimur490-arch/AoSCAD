@@ -2,6 +2,8 @@
 #include "ExpressionParser.hpp"
 
 #include <Standard_Failure.hxx>
+#include <BRepBndLib.hxx>
+#include <Bnd_Box.hxx>
 
 #include <QAction>
 #include <QActionGroup>
@@ -629,7 +631,7 @@ void MainWindow::createInspectorDock()
                                   scaleFields_, scaleGroup, 0.001, 100000, 3, 0.1));
     layout->addWidget(scaleGroup);
 
-    primitiveGroup_ = new QGroupBox(QStringLiteral("Параметры фичи · мм"), panel);
+    primitiveGroup_ = new QGroupBox(QStringLiteral("Параметры фичи"), panel);
     auto* primitiveLayout = new QFormLayout(primitiveGroup_);
     for (int i = 0; i < 3; ++i) {
         primitiveLabels_[static_cast<std::size_t>(i)] = new QLabel(primitiveGroup_);
@@ -691,11 +693,16 @@ void MainWindow::createInspectorDock()
     boundsValue_ = makeValueLabel();
     densityValue_ = makeValueLabel();
     massValue_ = makeValueLabel();
+    centerOfMassValue_ = makeValueLabel();
+    inertiaValue_ = makeValueLabel();
+    inertiaValue_->setToolTip(QStringLiteral("Диагональные моменты инерции относительно центра масс, вдоль глобальных осей; оценка для выбранного материала с однородной плотностью."));
     geometryLayout->addRow(QStringLiteral("Площадь"), areaValue_);
     geometryLayout->addRow(QStringLiteral("Объём"), volumeValue_);
     geometryLayout->addRow(QStringLiteral("Габариты"), boundsValue_);
     geometryLayout->addRow(QStringLiteral("Плотность"), densityValue_);
     geometryLayout->addRow(QStringLiteral("Масса"), massValue_);
+    geometryLayout->addRow(QStringLiteral("Центр масс"), centerOfMassValue_);
+    geometryLayout->addRow(QStringLiteral("Инерция Ixx / Iyy / Izz · кг·м²"), inertiaValue_);
     layout->addWidget(geometryGroup);
 
     colorButton_ = new QPushButton(QStringLiteral("Цвет поверхности"), panel);
@@ -903,6 +910,7 @@ void MainWindow::createMenusAndRibbon()
                                          QKeySequence(QStringLiteral("R")), CadViewport::Tool::Scale);
     QAction* measureAction = addToolAction(QStringLiteral("Измерить"), QStringLiteral("measure"), QStringLiteral("Измерение"),
                                            QKeySequence(QStringLiteral("M")), CadViewport::Tool::Measure);
+    QAction* intersectionAction = diagnosticsMenu->addAction(QStringLiteral("Проверить пересечение тел…"));
     selectAction->setChecked(true);
     selectionMenu->addAction(selectAction);
     managementMenu->addAction(moveAction);
@@ -920,6 +928,11 @@ void MainWindow::createMenusAndRibbon()
     QAction* rectangleSketchAction = sketchMenu->addAction(QStringLiteral("Прямоугольник"));
     QAction* circleSketchAction = sketchMenu->addAction(QStringLiteral("Окружность"));
     QAction* extrudeAction = modelingMenu->addAction(QStringLiteral("Выдавливание…"));
+    QAction* revolveAction = modelingMenu->addAction(QStringLiteral("Вращение эскиза…"));
+    auto* holeMenu = modelingMenu->addMenu(QStringLiteral("Сквозное отверстие"));
+    QAction* holeXAction = holeMenu->addAction(QStringLiteral("Вдоль оси X…"));
+    QAction* holeYAction = holeMenu->addAction(QStringLiteral("Вдоль оси Y…"));
+    QAction* holeZAction = holeMenu->addAction(QStringLiteral("Вдоль оси Z…"));
     modelingMenu->addSeparator();
     QAction* filletAction = modelingMenu->addAction(QStringLiteral("Скруглить все рёбра…"));
     QAction* chamferAction = modelingMenu->addAction(QStringLiteral("Снять фаску со всех рёбер…"));
@@ -931,6 +944,10 @@ void MainWindow::createMenusAndRibbon()
     QAction* patternXAction = patternMenu->addAction(QStringLiteral("По оси X…"));
     QAction* patternYAction = patternMenu->addAction(QStringLiteral("По оси Y…"));
     QAction* patternZAction = patternMenu->addAction(QStringLiteral("По оси Z…"));
+    auto* circularPatternMenu = modelingMenu->addMenu(QStringLiteral("Круговой массив"));
+    QAction* circularPatternXAction = circularPatternMenu->addAction(QStringLiteral("Вокруг оси X…"));
+    QAction* circularPatternYAction = circularPatternMenu->addAction(QStringLiteral("Вокруг оси Y…"));
+    QAction* circularPatternZAction = circularPatternMenu->addAction(QStringLiteral("Вокруг оси Z…"));
     auto* mirrorMenu = modelingMenu->addMenu(QStringLiteral("Зеркальная копия"));
     QAction* mirrorXYAction = mirrorMenu->addAction(QStringLiteral("Относительно XY"));
     QAction* mirrorYZAction = mirrorMenu->addAction(QStringLiteral("Относительно YZ"));
@@ -990,6 +1007,7 @@ void MainWindow::createMenusAndRibbon()
     setRibbonIcon(rectangleSketchAction, QStringLiteral("rectangle"), QStringLiteral("Прямоугольник"));
     setRibbonIcon(circleSketchAction, QStringLiteral("circle"), QStringLiteral("Окружность"));
     setRibbonIcon(extrudeAction, QStringLiteral("extrude"), QStringLiteral("Выдавить"));
+    setRibbonIcon(revolveAction, QStringLiteral("extrude"), QStringLiteral("Вращение"));
     setRibbonIcon(filletAction, QStringLiteral("fillet"), QStringLiteral("Скруглить"));
     setRibbonIcon(chamferAction, QStringLiteral("chamfer"), QStringLiteral("Фаска"));
     setRibbonIcon(booleanUnionAction, QStringLiteral("union"), QStringLiteral("Объединить"));
@@ -1065,7 +1083,7 @@ void MainWindow::createMenusAndRibbon()
     QWidget* sketchPage = createRibbonPage(QStringLiteral("Эскиз"), sketchLayout);
     addRibbonGroup(sketchPage, sketchLayout, QStringLiteral("Профили"), {rectangleSketchAction, circleSketchAction});
     addRibbonSeparator(sketchPage, sketchLayout);
-    addRibbonGroup(sketchPage, sketchLayout, QStringLiteral("Выдавливание"), {extrudeAction});
+    addRibbonGroup(sketchPage, sketchLayout, QStringLiteral("Операции профиля"), {extrudeAction, revolveAction});
     sketchLayout->addStretch(1);
 
     QHBoxLayout* transformLayout = nullptr;
@@ -1111,6 +1129,10 @@ void MainWindow::createMenusAndRibbon()
     connect(rectangleSketchAction, &QAction::triggered, this, [this] { startSketch(CadViewport::SketchTool::Rectangle); });
     connect(circleSketchAction, &QAction::triggered, this, [this] { startSketch(CadViewport::SketchTool::Circle); });
     connect(extrudeAction, &QAction::triggered, this, [this] { beginExtrudeForSelectedSketch(); });
+    connect(revolveAction, &QAction::triggered, this, [this] { createRevolutionFeature(); });
+    connect(holeXAction, &QAction::triggered, this, [this] { createThroughHoleFeature(QStringLiteral("X")); });
+    connect(holeYAction, &QAction::triggered, this, [this] { createThroughHoleFeature(QStringLiteral("Y")); });
+    connect(holeZAction, &QAction::triggered, this, [this] { createThroughHoleFeature(QStringLiteral("Z")); });
     connect(filletAction, &QAction::triggered, this, [this] { createEdgeTreatmentFeature(false); });
     connect(chamferAction, &QAction::triggered, this, [this] { createEdgeTreatmentFeature(true); });
     connect(booleanUnionAction, &QAction::triggered, this, [this] { createBooleanFeature(QStringLiteral("union")); });
@@ -1119,6 +1141,10 @@ void MainWindow::createMenusAndRibbon()
     connect(patternXAction, &QAction::triggered, this, [this] { createLinearPatternFeature(QStringLiteral("X")); });
     connect(patternYAction, &QAction::triggered, this, [this] { createLinearPatternFeature(QStringLiteral("Y")); });
     connect(patternZAction, &QAction::triggered, this, [this] { createLinearPatternFeature(QStringLiteral("Z")); });
+    connect(circularPatternXAction, &QAction::triggered, this, [this] { createCircularPatternFeature(QStringLiteral("X")); });
+    connect(circularPatternYAction, &QAction::triggered, this, [this] { createCircularPatternFeature(QStringLiteral("Y")); });
+    connect(circularPatternZAction, &QAction::triggered, this, [this] { createCircularPatternFeature(QStringLiteral("Z")); });
+    connect(intersectionAction, &QAction::triggered, this, [this] { checkIntersection(); });
     connect(mirrorXYAction, &QAction::triggered, this, [this] { createMirrorFeature(QStringLiteral("XY")); });
     connect(mirrorYZAction, &QAction::triggered, this, [this] { createMirrorFeature(QStringLiteral("YZ")); });
     connect(mirrorZXAction, &QAction::triggered, this, [this] { createMirrorFeature(QStringLiteral("ZX")); });
@@ -1399,6 +1425,8 @@ void MainWindow::updateInspector(bool updateMeasurements)
         boundsValue_->setText(QStringLiteral("—"));
         densityValue_->setText(QStringLiteral("—"));
         massValue_->setText(QStringLiteral("—"));
+        centerOfMassValue_->setText(QStringLiteral("—"));
+        inertiaValue_->setText(QStringLiteral("—"));
     }
     syncingInspector_ = false;
 }
@@ -1407,13 +1435,15 @@ void MainWindow::updatePhysicalInspector(const CadObject& object)
 {
     CadGeometryProperties properties;
     try {
-        properties = CadIO::analyzeShape(object.worldShape());
+        properties = CadIO::analyzeShape(object.worldShape(), true);
     } catch (const Standard_Failure&) {
         areaValue_->setText(QStringLiteral("—"));
         volumeValue_->setText(QStringLiteral("—"));
         boundsValue_->setText(QStringLiteral("—"));
         densityValue_->setText(QStringLiteral("—"));
         massValue_->setText(QStringLiteral("—"));
+        centerOfMassValue_->setText(QStringLiteral("—"));
+        inertiaValue_->setText(QStringLiteral("—"));
         return;
     } catch (const std::exception&) {
         areaValue_->setText(QStringLiteral("—"));
@@ -1421,6 +1451,8 @@ void MainWindow::updatePhysicalInspector(const CadObject& object)
         boundsValue_->setText(QStringLiteral("—"));
         densityValue_->setText(QStringLiteral("—"));
         massValue_->setText(QStringLiteral("—"));
+        centerOfMassValue_->setText(QStringLiteral("—"));
+        inertiaValue_->setText(QStringLiteral("—"));
         return;
     }
 
@@ -1445,11 +1477,21 @@ void MainWindow::updatePhysicalInspector(const CadObject& object)
     } else {
         boundsValue_->setText(QStringLiteral("—"));
     }
+    if (properties.hasInertia) {
+        centerOfMassValue_->setText(QStringLiteral("%1, %2, %3 %4")
+                                        .arg(properties.centerOfMassMm[0] * factor, 0, 'g', 5)
+                                        .arg(properties.centerOfMassMm[1] * factor, 0, 'g', 5)
+                                        .arg(properties.centerOfMassMm[2] * factor, 0, 'g', 5)
+                                        .arg(unit));
+    } else {
+        centerOfMassValue_->setText(QStringLiteral("нет данных"));
+    }
 
     const double density = materialDensityKgPerM3(object.materialId);
     if (density <= 0.0) {
         densityValue_->setText(QStringLiteral("не задана"));
         massValue_->setText(QStringLiteral("—"));
+        inertiaValue_->setText(QStringLiteral("не задан материал"));
     } else {
         densityValue_->setText(QStringLiteral("%1 кг/м³").arg(density, 0, 'g', 5));
         if (properties.hasVolume) {
@@ -1459,6 +1501,15 @@ void MainWindow::updatePhysicalInspector(const CadObject& object)
                                     : QStringLiteral("%1 кг (оценка)").arg(massKg, 0, 'g', 5));
         } else {
             massValue_->setText(QStringLiteral("нет данных"));
+        }
+        if (properties.hasInertia) {
+            const double inertiaScale = density * 1.0e-15;
+            inertiaValue_->setText(QStringLiteral("%1 / %2 / %3 (оценка)")
+                                       .arg(properties.inertiaTensorDiagonalMm5[0] * inertiaScale, 0, 'g', 5)
+                                       .arg(properties.inertiaTensorDiagonalMm5[1] * inertiaScale, 0, 'g', 5)
+                                       .arg(properties.inertiaTensorDiagonalMm5[2] * inertiaScale, 0, 'g', 5));
+        } else {
+            inertiaValue_->setText(QStringLiteral("нет данных"));
         }
     }
 }
@@ -1672,6 +1723,8 @@ void MainWindow::editPrimitiveParameters()
         selected.featureType == QStringLiteral("sketch") ||
         selected.featureType == QStringLiteral("fillet") ||
         selected.featureType == QStringLiteral("chamfer") ||
+        selected.featureType == QStringLiteral("revolve") ||
+        selected.featureType == QStringLiteral("hole") ||
         selected.featureType == QStringLiteral("pattern");
     if (!hasEditableParameters)
         return;
@@ -1847,6 +1900,186 @@ void MainWindow::createBooleanFeature(const QString& operation)
     }
 }
 
+void MainWindow::checkIntersection()
+{
+    std::vector<int> eligibleObjects;
+    try {
+        for (std::size_t i = 0; i < document_.objects.size(); ++i) {
+            const CadObject& object = document_.objects[i];
+            if (!object.visible || object.suppressed || object.featureType == QStringLiteral("sketch"))
+                continue;
+            if (CadIO::analyzeShape(object.worldShape()).hasVolume)
+                eligibleObjects.push_back(static_cast<int>(i));
+        }
+    } catch (const Standard_Failure& error) {
+        statusBar()->showMessage(QString::fromLocal8Bit(error.GetMessageString()), 5000);
+        return;
+    } catch (const std::exception& error) {
+        statusBar()->showMessage(QString::fromUtf8(error.what()), 5000);
+        return;
+    }
+
+    if (eligibleObjects.size() < 2) {
+        statusBar()->showMessage(QStringLiteral("Для проверки пересечения нужны два видимых объёмных тела."), 4500);
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Проверка пересечения тел"));
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* form = new QFormLayout;
+    auto* firstCombo = new QComboBox(&dialog);
+    auto* secondCombo = new QComboBox(&dialog);
+    for (const int index : eligibleObjects) {
+        const CadObject& object = document_.objects[static_cast<std::size_t>(index)];
+        const QString label = QStringLiteral("%1  [%2]").arg(object.name).arg(index + 1);
+        firstCombo->addItem(label, object.id);
+        secondCombo->addItem(label, object.id);
+    }
+    form->addRow(QStringLiteral("Первое тело"), firstCombo);
+    form->addRow(QStringLiteral("Второе тело"), secondCombo);
+    layout->addLayout(form);
+    auto* hint = new QLabel(QStringLiteral("Проверяется объём общего B-Rep тела; касание поверхностями без перекрывающегося объёма считается отсутствием интерференции."), &dialog);
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    const int selected = selectedIndex();
+    for (int i = 0; i < firstCombo->count(); ++i) {
+        if (eligibleObjects[static_cast<std::size_t>(i)] == selected) {
+            firstCombo->setCurrentIndex(i);
+            break;
+        }
+    }
+    for (int i = 0; i < secondCombo->count(); ++i) {
+        if (secondCombo->itemData(i).toString() != firstCombo->currentData().toString()) {
+            secondCombo->setCurrentIndex(i);
+            break;
+        }
+    }
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString firstId = firstCombo->currentData().toString();
+    const QString secondId = secondCombo->currentData().toString();
+    if (firstId.isEmpty() || secondId.isEmpty() || firstId == secondId) {
+        QMessageBox::warning(this, QStringLiteral("Проверка пересечения"),
+                             QStringLiteral("Выберите два разных тела."));
+        return;
+    }
+
+    try {
+        const auto findObject = [this](const QString& id) -> const CadObject* {
+            const auto it = std::find_if(document_.objects.cbegin(), document_.objects.cend(), [&id](const CadObject& object) {
+                return object.id == id;
+            });
+            return it == document_.objects.cend() ? nullptr : &*it;
+        };
+        const CadObject* first = findObject(firstId);
+        const CadObject* second = findObject(secondId);
+        if (!first || !second)
+            throw CadError(QStringLiteral("Одно из выбранных тел больше не существует."));
+        const double overlapVolumeMm3 = CadIO::intersectionVolumeMm3(first->worldShape(), second->worldShape());
+        if (overlapVolumeMm3 <= 1.0e-9) {
+            statusBar()->showMessage(QStringLiteral("Объёмного пересечения нет: тела раздельны или только касаются."), 5000);
+        } else {
+            const double factor = unitFactor();
+            const double overlapVolume = overlapVolumeMm3 * factor * factor * factor;
+            statusBar()->showMessage(QStringLiteral("Объём пересечения: %1 %2³.")
+                                         .arg(overlapVolume, 0, 'g', 7).arg(document_.units), 6000);
+        }
+    } catch (const Standard_Failure& error) {
+        statusBar()->showMessage(QString::fromLocal8Bit(error.GetMessageString()), 6000);
+    } catch (const std::exception& error) {
+        statusBar()->showMessage(QString::fromUtf8(error.what()), 6000);
+    }
+}
+
+void MainWindow::createRevolutionFeature()
+{
+    const int index = selectedIndex();
+    if (index < 0 || static_cast<std::size_t>(index) >= document_.objects.size()) {
+        statusBar()->showMessage(QStringLiteral("Сначала выберите эскиз для вращения."), 4000);
+        return;
+    }
+
+    const CadObject& selected = document_.objects[static_cast<std::size_t>(index)];
+    if (selected.featureType != QStringLiteral("sketch")) {
+        statusBar()->showMessage(QStringLiteral("Вращение доступно только для замкнутого эскиза."), 4500);
+        return;
+    }
+
+    const QString sketchPlane = selected.sketchPlane.trimmed().toUpper();
+    QStringList axes;
+    int suggestedAxis = 0;
+    if (sketchPlane == QStringLiteral("XY")) {
+        axes = {QStringLiteral("X"), QStringLiteral("Y")};
+        suggestedAxis = 1;
+    } else if (sketchPlane == QStringLiteral("YZ")) {
+        axes = {QStringLiteral("Y"), QStringLiteral("Z")};
+        suggestedAxis = 1;
+    } else if (sketchPlane == QStringLiteral("ZX")) {
+        axes = {QStringLiteral("Z"), QStringLiteral("X")};
+        suggestedAxis = 1;
+    } else {
+        statusBar()->showMessage(QStringLiteral("Плоскость эскиза не поддерживается для вращения."), 4500);
+        return;
+    }
+
+    bool accepted = false;
+    const QString axis = QInputDialog::getItem(
+        this, QStringLiteral("Тело вращения"),
+        QStringLiteral("Ось вращения через начало координат (лежит в плоскости эскиза)"),
+        axes, suggestedAxis, false, &accepted);
+    if (!accepted)
+        return;
+    const double angleDegrees = QInputDialog::getDouble(
+        this, QStringLiteral("Тело вращения"), QStringLiteral("Угол вращения · °"),
+        360.0, 0.001, 360.0, 3, &accepted);
+    if (!accepted)
+        return;
+
+    try {
+        CadDocument candidate = document_;
+        CadObject& source = candidate.objects[static_cast<std::size_t>(index)];
+        CadObject feature;
+        feature.id = cadNewId();
+        feature.name = uniqueName(QStringLiteral("Вращение %1").arg(axis));
+        feature.featureType = QStringLiteral("revolve");
+        feature.primitiveType = QStringLiteral("revolve-%1").arg(axis.toLower());
+        feature.inputs = {source.id};
+        feature.primitiveParameters = {angleDegrees};
+        feature.parameterExpressions.insert(QStringLiteral("p0"), QString::number(angleDegrees, 'g', 15));
+        feature.color = source.color;
+        feature.materialId = source.materialId;
+        source.visible = false;
+        candidate.objects.push_back(std::move(feature));
+        const QString resultId = candidate.objects.back().id;
+        CadIO::recomputeParametricFeatures(candidate);
+        document_ = std::move(candidate);
+
+        int resultIndex = -1;
+        for (std::size_t i = 0; i < document_.objects.size(); ++i) {
+            if (document_.objects[i].id == resultId) {
+                resultIndex = static_cast<int>(i);
+                break;
+            }
+        }
+        viewport_->setSelectedObject(resultIndex);
+        refreshViewport();
+        pushHistory();
+        viewport_->fitAll();
+        statusBar()->showMessage(QStringLiteral("Тело вращения построено. Угол можно изменить в инспекторе."), 5000);
+    } catch (const Standard_Failure& error) {
+        statusBar()->showMessage(QString::fromLocal8Bit(error.GetMessageString()), 6000);
+    } catch (const std::exception& error) {
+        statusBar()->showMessage(QString::fromUtf8(error.what()), 6000);
+    }
+}
+
 void MainWindow::createEdgeTreatmentFeature(bool chamfer)
 {
     const int index = selectedIndex();
@@ -1904,6 +2137,127 @@ void MainWindow::createEdgeTreatmentFeature(bool chamfer)
         refreshViewport();
         pushHistory();
         statusBar()->showMessage(QStringLiteral("%1 всех рёбер выполнено. Размер можно изменить в инспекторе.").arg(operationName), 5000);
+    } catch (const Standard_Failure& error) {
+        statusBar()->showMessage(QString::fromLocal8Bit(error.GetMessageString()), 6000);
+    } catch (const std::exception& error) {
+        statusBar()->showMessage(QString::fromUtf8(error.what()), 6000);
+    }
+}
+
+void MainWindow::createThroughHoleFeature(const QString& axis)
+{
+    const int index = selectedIndex();
+    if (index < 0 || static_cast<std::size_t>(index) >= document_.objects.size()) {
+        statusBar()->showMessage(QStringLiteral("Сначала выберите тело для отверстия."), 4000);
+        return;
+    }
+
+    const QString normalizedAxis = axis.trimmed().toUpper();
+    if (normalizedAxis != QStringLiteral("X") && normalizedAxis != QStringLiteral("Y") &&
+        normalizedAxis != QStringLiteral("Z")) {
+        statusBar()->showMessage(QStringLiteral("Ось сквозного отверстия должна быть X, Y или Z."), 4000);
+        return;
+    }
+
+    try {
+        const CadObject& selected = document_.objects[static_cast<std::size_t>(index)];
+        const TopoDS_Shape sourceShape = selected.worldShape();
+        const CadGeometryProperties properties = CadIO::analyzeShape(sourceShape);
+        if (!properties.hasVolume) {
+            statusBar()->showMessage(QStringLiteral("Сквозное отверстие требует замкнутое тело с объёмом."), 5000);
+            return;
+        }
+
+        Bnd_Box bounds;
+        BRepBndLib::Add(sourceShape, bounds);
+        if (bounds.IsVoid())
+            throw CadError(QStringLiteral("Не удалось определить габариты выбранного тела."));
+        Standard_Real xmin = 0.0, ymin = 0.0, zmin = 0.0;
+        Standard_Real xmax = 0.0, ymax = 0.0, zmax = 0.0;
+        bounds.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+
+        QString firstCoordinate;
+        QString secondCoordinate;
+        double firstOffset = 0.0;
+        double secondOffset = 0.0;
+        double firstExtent = 0.0;
+        double secondExtent = 0.0;
+        if (normalizedAxis == QStringLiteral("X")) {
+            firstCoordinate = QStringLiteral("Y");
+            secondCoordinate = QStringLiteral("Z");
+            firstOffset = (ymin + ymax) * 0.5;
+            secondOffset = (zmin + zmax) * 0.5;
+            firstExtent = ymax - ymin;
+            secondExtent = zmax - zmin;
+        } else if (normalizedAxis == QStringLiteral("Y")) {
+            firstCoordinate = QStringLiteral("X");
+            secondCoordinate = QStringLiteral("Z");
+            firstOffset = (xmin + xmax) * 0.5;
+            secondOffset = (zmin + zmax) * 0.5;
+            firstExtent = xmax - xmin;
+            secondExtent = zmax - zmin;
+        } else {
+            firstCoordinate = QStringLiteral("X");
+            secondCoordinate = QStringLiteral("Y");
+            firstOffset = (xmin + xmax) * 0.5;
+            secondOffset = (ymin + ymax) * 0.5;
+            firstExtent = xmax - xmin;
+            secondExtent = ymax - ymin;
+        }
+
+        bool accepted = false;
+        const double suggestedDiameter = std::max(0.1, std::min(firstExtent, secondExtent) * 0.25);
+        const double diameter = QInputDialog::getDouble(
+            this, QStringLiteral("Сквозное отверстие"), QStringLiteral("Диаметр отверстия · мм"),
+            suggestedDiameter, 0.001, 1000000.0, 3, &accepted);
+        if (!accepted)
+            return;
+        firstOffset = QInputDialog::getDouble(
+            this, QStringLiteral("Сквозное отверстие"),
+            QStringLiteral("Координата центра %1 · мм").arg(firstCoordinate),
+            firstOffset, -1000000.0, 1000000.0, 3, &accepted);
+        if (!accepted)
+            return;
+        secondOffset = QInputDialog::getDouble(
+            this, QStringLiteral("Сквозное отверстие"),
+            QStringLiteral("Координата центра %1 · мм").arg(secondCoordinate),
+            secondOffset, -1000000.0, 1000000.0, 3, &accepted);
+        if (!accepted)
+            return;
+
+        CadDocument candidate = document_;
+        CadObject& source = candidate.objects[static_cast<std::size_t>(index)];
+        CadObject feature;
+        feature.id = cadNewId();
+        feature.name = uniqueName(QStringLiteral("Отверстие %1").arg(normalizedAxis));
+        feature.featureType = QStringLiteral("hole");
+        feature.primitiveType = QStringLiteral("hole-through-%1").arg(normalizedAxis.toLower());
+        feature.inputs = {source.id};
+        feature.primitiveParameters = {diameter, firstOffset, secondOffset};
+        feature.parameterExpressions.insert(QStringLiteral("p0"), QString::number(diameter, 'g', 15));
+        feature.parameterExpressions.insert(QStringLiteral("p1"), QString::number(firstOffset, 'g', 15));
+        feature.parameterExpressions.insert(QStringLiteral("p2"), QString::number(secondOffset, 'g', 15));
+        feature.color = source.color;
+        feature.materialId = source.materialId;
+        source.visible = false;
+        candidate.objects.push_back(std::move(feature));
+        const QString resultId = candidate.objects.back().id;
+        CadIO::recomputeParametricFeatures(candidate);
+        document_ = std::move(candidate);
+
+        int resultIndex = -1;
+        for (std::size_t i = 0; i < document_.objects.size(); ++i) {
+            if (document_.objects[i].id == resultId) {
+                resultIndex = static_cast<int>(i);
+                break;
+            }
+        }
+        viewport_->setSelectedObject(resultIndex);
+        refreshViewport();
+        pushHistory();
+        viewport_->fitAll();
+        statusBar()->showMessage(QStringLiteral("Сквозное отверстие построено: ⌀%1 мм вдоль оси %2. Параметры доступны в инспекторе.")
+                                     .arg(diameter, 0, 'g', 6).arg(normalizedAxis), 6000);
     } catch (const Standard_Failure& error) {
         statusBar()->showMessage(QString::fromLocal8Bit(error.GetMessageString()), 6000);
     } catch (const std::exception& error) {
@@ -1979,6 +2333,81 @@ void MainWindow::createLinearPatternFeature(const QString& axis)
         pushHistory();
         viewport_->fitAll();
         statusBar()->showMessage(QStringLiteral("Линейный массив по оси %1 создан: %2 экземпляра(ов).")
+                                     .arg(normalizedAxis).arg(instanceCount), 5000);
+    } catch (const Standard_Failure& error) {
+        statusBar()->showMessage(QString::fromLocal8Bit(error.GetMessageString()), 6000);
+    } catch (const std::exception& error) {
+        statusBar()->showMessage(QString::fromUtf8(error.what()), 6000);
+    }
+}
+
+void MainWindow::createCircularPatternFeature(const QString& axis)
+{
+    const int index = selectedIndex();
+    if (index < 0 || static_cast<std::size_t>(index) >= document_.objects.size()) {
+        statusBar()->showMessage(QStringLiteral("Сначала выберите тело для кругового массива."), 4000);
+        return;
+    }
+
+    const QString normalizedAxis = axis.trimmed().toUpper();
+    if (normalizedAxis != QStringLiteral("X") && normalizedAxis != QStringLiteral("Y") &&
+        normalizedAxis != QStringLiteral("Z")) {
+        statusBar()->showMessage(QStringLiteral("Ось кругового массива должна быть X, Y или Z."), 4000);
+        return;
+    }
+
+    try {
+        const CadObject& selected = document_.objects[static_cast<std::size_t>(index)];
+        if (!CadIO::analyzeShape(selected.worldShape()).hasVolume) {
+            statusBar()->showMessage(QStringLiteral("Круговой массив доступен только для тела с объёмом."), 5000);
+            return;
+        }
+        bool accepted = false;
+        const int instanceCount = QInputDialog::getInt(
+            this, QStringLiteral("Круговой массив"), QStringLiteral("Количество экземпляров (включая исходное тело)"),
+            4, 2, 100, 1, &accepted);
+        if (!accepted)
+            return;
+
+        const double maximumStep = std::floor((360.0 / static_cast<double>(instanceCount)) * 1000.0) / 1000.0;
+        const double angleStep = QInputDialog::getDouble(
+            this, QStringLiteral("Круговой массив"),
+            QStringLiteral("Шаг угла вокруг оси %1 · ° (суммарно не более 360°)").arg(normalizedAxis),
+            maximumStep, 0.001, maximumStep, 3, &accepted);
+        if (!accepted)
+            return;
+
+        CadDocument candidate = document_;
+        CadObject& source = candidate.objects[static_cast<std::size_t>(index)];
+        CadObject feature;
+        feature.id = cadNewId();
+        feature.name = uniqueName(QStringLiteral("Круговой массив %1").arg(normalizedAxis));
+        feature.featureType = QStringLiteral("pattern");
+        feature.primitiveType = QStringLiteral("circular-pattern-%1").arg(normalizedAxis.toLower());
+        feature.inputs = {source.id};
+        feature.primitiveParameters = {static_cast<double>(instanceCount), angleStep};
+        feature.parameterExpressions.insert(QStringLiteral("p0"), QString::number(instanceCount));
+        feature.parameterExpressions.insert(QStringLiteral("p1"), QString::number(angleStep, 'g', 15));
+        feature.color = source.color;
+        feature.materialId = source.materialId;
+        source.visible = false;
+        candidate.objects.push_back(std::move(feature));
+        const QString resultId = candidate.objects.back().id;
+        CadIO::recomputeParametricFeatures(candidate);
+        document_ = std::move(candidate);
+
+        int resultIndex = -1;
+        for (std::size_t i = 0; i < document_.objects.size(); ++i) {
+            if (document_.objects[i].id == resultId) {
+                resultIndex = static_cast<int>(i);
+                break;
+            }
+        }
+        viewport_->setSelectedObject(resultIndex);
+        refreshViewport();
+        pushHistory();
+        viewport_->fitAll();
+        statusBar()->showMessage(QStringLiteral("Круговой массив вокруг оси %1 создан: %2 экземпляра(ов).")
                                      .arg(normalizedAxis).arg(instanceCount), 5000);
     } catch (const Standard_Failure& error) {
         statusBar()->showMessage(QString::fromLocal8Bit(error.GetMessageString()), 6000);
