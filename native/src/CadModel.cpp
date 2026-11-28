@@ -1180,6 +1180,7 @@ TopoDS_Shape CadIO::makeThroughHole(const TopoDS_Shape& shape,
     }
 
     BRepPrimAPI_MakeCylinder cutter(gp_Ax2(start, direction), diameterMm * 0.5, length);
+    cutter.Build();
     if (!cutter.IsDone() || cutter.Shape().IsNull())
         throw CadError(QStringLiteral("Не удалось построить инструмент сквозного отверстия."));
 
